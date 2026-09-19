@@ -28,23 +28,28 @@ on:
         required: true
         type: choice
         options:
+          - A14+15+16
+          - A15+16
+          - A14+15
           - A16
+          - A15
+          - A14
           - android16-6.12
           - android15-6.6
           - android14-6.1
           - android13-5.15
           - android12-5.10
-        default: A16
+        default: A14+15+16
       op_target_model:
         description: 'Optional exact/prefix model: OP12, OP13-CPH, OP-NORD-4, OP12-6.1.118. Case-sensitive. Empty = all.'
         required: false
         type: string
         default: ''
       ksu_options:
-        description: 'Enter SukiSU build json'
+        description: 'Enter SukiSU build json (default is the verified builtin commit)'
         required: true
         type: string
-        default: '[{"type":"SUKISU","hash":"main"}]'
+        default: '[{"type":"SUKISU","hash":"b20dee702035af09cb2ecb5f35443bbc1747f3e6"}]'
       optimize_level:
         description: "Compiler optimization level"
         required: true
@@ -74,13 +79,8 @@ on:
         required: false
         type: boolean
         default: false
-      nomount_ref:
-        description: 'NoMount-Suite branch/ref for the Prism engine src + patches (default main; set a branch to validate it before it is released). The engine ships inside the Suite repo, under hookless/.'
-        required: false
-        type: string
-        default: main
       patches_ref:
-        description: 'kernel_patches branch/ref for the _ghost/_hook/_pathhide cloaks and the apply script (default main; set a branch to validate before merge)'
+        description: 'kernel_patches branch/ref for optional performance and compatibility patches'
         required: false
         type: string
         default: main
@@ -94,7 +94,6 @@ jobs:
       active_gki_keys: ${{ steps.set-matrix.outputs.active_gki_keys }}
       ksu_resolved_hash:    ${{ steps.set-matrix.outputs.ksu_resolved_hash }}
       ksu_options_normalized: ${{ steps.set-matrix.outputs.ksu_options_normalized }}
-      nomount_version: ${{ steps.set-matrix.outputs.nomount_version }}
     env:
       GH_TOKEN: ${{ github.token }}
       GH_HTTP_TIMEOUT: 600
@@ -112,8 +111,12 @@ jobs:
           input="${{ github.event.inputs.op_model }}"
           target_model="${{ github.event.inputs.op_target_model }}"
           ksu_options_raw='${{ github.event.inputs.ksu_options }}'
-          if ! ksu_options_normalized=$(echo "$ksu_options_raw" | jq -c 'map(if .type then .type |= ascii_upcase | if .hash == null then .hash = "v4.1.3" else . end else error("No type found") end)' 2>&1); then
+          if ! ksu_options_normalized=$(echo "$ksu_options_raw" | jq -c 'map(if .type then .type |= ascii_upcase | if .hash == null or .hash == "" then .hash = "b20dee702035af09cb2ecb5f35443bbc1747f3e6" else . end else error("No type found") end)' 2>&1); then
             echo "::error::ksu_options validation failed: $ksu_options_normalized"
+            exit 1
+          fi
+          if [ "$(echo "$ksu_options_normalized" | jq -r 'length > 0 and all(.[]; .type == "SUKISU")')" != true ]; then
+            echo "::error::Only SUKISU entries are supported, and at least one entry is required"
             exit 1
           fi
           
@@ -135,16 +138,30 @@ jobs:
           jq_filter="."
           
           case "$input" in
+            A14+15+16)
+              ;;
+            A15+16)
+              jq_filter="map(select(.os_version == \"A15\" or .os_version == \"A16\"))"
+              ;;
+            A14+15)
+              jq_filter="map(select(.os_version == \"A14\" or .os_version == \"A15\"))"
+              ;;
             A16)
               jq_filter="map(select(.os_version == \"A16\"))"
+              ;;
+            A15)
+              jq_filter="map(select(.os_version == \"A15\"))"
+              ;;
+            A14)
+              jq_filter="map(select(.os_version == \"A14\"))"
               ;;
             android*-*.*)
               IFS='-' read -r av kv <<< "$input"
               
-              jq_filter="map(select(.os_version == \"A16\")) | map(select(.android_version == \"$av\" and .kernel_version == \"$kv\"))"
+              jq_filter="map(select(.android_version == \"$av\" and .kernel_version == \"$kv\"))"
               
               echo "ℹ️  Android-Kernel filter applied: $av-$kv"
-              echo "   Restricted to: A16 only"
+              echo "   Matching all restored OS groups: A14, A15 and A16"
               ;;
             *)
               echo "::warning::Unknown input '$input'. Using empty filter."
@@ -255,42 +272,13 @@ jobs:
           
           mapfile -t active_keys < <(
             echo "$merged_matrix" \
-              | jq -r '.[] | select(.NMS == true) | "\(.android_version)-\(.kernel_version)"' \
+              | jq -r '.[] | select(.susfs == true) | "\(.android_version)-\(.kernel_version)"' \
               | sort -u
           )
-
-          echo "🔍 NoMount (hookless) enabled for: ${active_keys[*]:-none}"
-
+          echo "🔍 SUSFS enabled for: ${active_keys[*]:-none}"
           active_gki_keys_csv=$(IFS=','; echo "${active_keys[*]:-}")
           echo "active_gki_keys=$active_gki_keys_csv" >> "$GITHUB_OUTPUT"
 
-          NM_HDR_URL="https://raw.githubusercontent.com/Bouteillepleine/NoMount-Suite/${{ inputs.nomount_ref || 'main' }}/hookless/src/nomount.h"
-          nomount_version="unknown"
-
-          for attempt in 1 2 3; do
-            hdr="$(curl -fsSL --max-time 30 "$NM_HDR_URL" || true)"
-            if [ -n "$hdr" ]; then
-              nomount_version="$(printf '%s\n' "$hdr" \
-                | sed -n 's/^#define[[:space:]]\+NM_MODULE_VERSION[[:space:]]\+"\([^"]*\)".*/\1/p' \
-                | head -n1)"
-              if [ -n "$nomount_version" ]; then
-                break
-              fi
-            fi
-            nomount_version="unknown"
-            echo "  ⚠️  Attempt $attempt: could not read NM_MODULE_VERSION, retrying..."
-            sleep 5
-          done
-
-          echo "  ✅ NoMount version: $nomount_version"
-
-          if [ "${{ inputs.make_release }}" = "true" ] && [ "$nomount_version" = "unknown" ]; then
-            echo "::error::Could not read NM_MODULE_VERSION from NoMount-Suite@${{ inputs.nomount_ref || 'main' }}. Cannot proceed with release."
-            exit 1
-          fi
-
-          echo "nomount_version=$nomount_version" >> "$GITHUB_OUTPUT"
-          
           merged_matrix=$(echo "$merged_matrix" | jq '
             sort_by(
               (.os_version | gsub("A"; "") | tonumber? // 0) * -1,
@@ -349,7 +337,7 @@ jobs:
             echo "| 🧰 ADIOS · Debug artifacts | ${{ inputs.enable_adios && '✅' || '❌' }} · ${{ inputs.debug && '✅' || '❌' }} |"
             echo ""
             echo ""
-            echo "**NoMount (hookless)** — \`Bouteillepleine/NoMount-Suite\`, version \`${{ steps.set-matrix.outputs.nomount_version }}\`"
+            echo "**Defaults:** ✅ SukiSU builtin · ✅ KPM · ✅ SUSFS · ❌ BBG · ❌ NoMount"
             echo ""
           } >> "$GITHUB_STEP_SUMMARY"
           
@@ -359,7 +347,7 @@ jobs:
           
           if [[ "${{ inputs.op_model }}" == android*-*.* ]]; then
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "> **⚠️ Android-Kernel Filter:** Only A16 devices will be built for \`${{ inputs.op_model }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "> **ℹ️ Android-Kernel Filter:** matching devices from A14, A15 and A16 will be built for \`${{ inputs.op_model }}\`" >> $GITHUB_STEP_SUMMARY
           fi
 
   mirror_toolchain:
@@ -464,7 +452,7 @@ jobs:
           apt_try install -y --no-install-recommends \
             git curl ca-certificates build-essential clang lld flex bison \
             libelf-dev libssl-dev libncurses-dev zlib1g-dev liblz4-tool \
-            libxml2-utils rsync unzip dwarves file python3 ccache jq bc dos2unix kmod libdw-dev elfutils pigz
+            libxml2-utils rsync unzip dwarves file python3 ccache jq bc dos2unix kmod libdw-dev elfutils pigz aria2
           sudo apt-get clean
           echo "✅ Dependencies installed"
           echo "::endgroup::"
@@ -556,7 +544,6 @@ jobs:
           optimize_level: ${{ inputs.optimize_level }}
           build_timestamp: ${{ inputs.build_timestamp }}
           enable_adios: ${{ inputs.enable_adios }}
-          nomount_ref: ${{ inputs.nomount_ref }}
           patches_ref: ${{ inputs.patches_ref }}
           clean: ${{ inputs.clean_build }}
           debug: ${{ inputs.debug }}
@@ -580,6 +567,8 @@ jobs:
             echo "Outputs:"
             echo "  - Kernel: ${{ steps.build.outputs.kernel_version }}"
             echo "  - SukiSU: v${{ steps.build.outputs.ksu_version }}"
+            echo "  - SUSFS: ${{ steps.build.outputs.susfs_version }}"
+            echo "  - KPM: ${{ matrix.kpm }}"
             echo "ksun_ver=" >> "$GITHUB_OUTPUT"
             echo "ksu_ver=${{ steps.build.outputs.ksu_version }}" >> "$GITHUB_OUTPUT"
             echo "  - Build time: ${{ steps.build.outputs.build_time }}s"
@@ -619,6 +608,8 @@ jobs:
           EOF
             cat >> $GITHUB_STEP_SUMMARY << EOF
           | **SukiSU** | v${{ steps.build.outputs.ksu_version }} |
+          | **SUSFS** | ${{ steps.build.outputs.susfs_version }} |
+          | **KPM** | ${{ matrix.kpm }} |
           EOF
           cat >> $GITHUB_STEP_SUMMARY << EOF
           | **Build Time** | ${{ steps.build.outputs.build_time }}s |
@@ -704,6 +695,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   trigger-release:
+    name: 📦 Create release
     needs: [set-op-model, build]
     runs-on: ubuntu-latest
     if: |
@@ -712,497 +704,92 @@ jobs:
       needs.build.result == 'success' &&
       needs.set-op-model.result == 'success'
     env:
-      REPO_OWNER: ${{ github.repository_owner }}
-      REPO_NAME: ${{ github.event.repository.name }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      NOMOUNT_VERSION: ${{ needs.set-op-model.outputs.nomount_version }}
-      RELEASE_NAME: 'SukiSU 📦 NoMount (v${{ needs.set-op-model.outputs.nomount_version }})'
     steps:
       - name: 📥 Checkout code
         uses: actions/checkout@v6
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
-      - name: 🏷️ Generate and Create New Tag
-        run: |
-          TAG_BASE="nm${NOMOUNT_VERSION}"
-
-          # Highest -rN already taken, across BOTH tag refs AND release tag_names
-          # (drafts included), paginated.
-          #
-          # Refs alone were not enough: a DRAFT release owns its tag_name before
-          # the ref exists, so a run reading only refs picked an N a draft already
-          # held and `gh release create` refused it -- measured 2026-09-06, run
-          # 34021057361, which failed with "HTTP 403: Resource not accessible by
-          # integration". That is GitHub's reply when the tag_name is taken, not a
-          # permissions problem: the token had Contents: write throughout.
-          #
-          # --paginate because both endpoints stop at 30 per page. At five tags
-          # that was academic; it stops being academic silently, on whichever
-          # release crosses the boundary.
-          #
-          # TAG_BASE is escaped for sed: it contains dots, and an unescaped
-          # `nm1.30.0` would also match `nm1X30Y0`.
-          TB_RE=$(printf '%s' "$TAG_BASE" | sed 's/[.[\*^$]/\\&/g')
-
-          LATEST_N=$( { gh api --paginate "repos/$REPO_OWNER/$REPO_NAME/tags"     --jq '.[].name'
-                        gh api --paginate "repos/$REPO_OWNER/$REPO_NAME/releases" --jq '.[].tag_name'
-                      } | sed -n "s/^${TB_RE}-r\([0-9][0-9]*\)$/\1/p" | sort -n | tail -1 )
-
-          NEW_TAG="${TAG_BASE}-r$(( ${LATEST_N:-0} + 1 ))"
-
-          echo "New tag: $NEW_TAG (highest existing suffix: ${LATEST_N:-none})"
-          echo "NEW_TAG=${NEW_TAG}" >> $GITHUB_ENV
-
-      - name: 📥 Download Artifacts
+      - name: 📥 Download build artifacts
         uses: actions/download-artifact@v8
         with:
           path: ./downloaded-artifacts
           merge-multiple: true
           skip-decompress: true
 
-      - name: 🔐 Generate Checksums
+      - name: 📝 Generate release notes
         shell: bash
         run: |
           set -euo pipefail
 
-          if ! compgen -G "./downloaded-artifacts/*.zip" > /dev/null; then
-            echo "::error::No ZIP artifacts found."
-            find ./downloaded-artifacts -maxdepth 2 -type f -print || true
+          MATRIX_FILE="./downloaded-artifacts/matrix.json"
+          if [ ! -s "$MATRIX_FILE" ]; then
+            echo "::error::Build matrix artifact is missing"
             exit 1
           fi
 
-          cd downloaded-artifacts
-          sha256sum *.zip | sort -k2 > ../00_CHECKSUMS.txt
-          cd ..
+          total="$(jq 'length' "$MATRIX_FILE")"
+          a14="$(jq '[.[] | select(.os_version == "A14")] | length' "$MATRIX_FILE")"
+          a15="$(jq '[.[] | select(.os_version == "A15")] | length' "$MATRIX_FILE")"
+          a16="$(jq '[.[] | select(.os_version == "A16")] | length' "$MATRIX_FILE")"
+          
+          mapfile -d '' assets < <(find ./downloaded-artifacts -maxdepth 1 -type f -name 'AK3_*.zip' -print0 | sort -z)
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "::error::No AK3 kernel ZIPs were downloaded"
+            exit 1
+          fi
+          
+          cat > release_notes.md <<EOF
+          # OnePlus SukiSU kernels
+          
+          Built from the restored A14, A15 and A16 configuration sets.
+          
+          | Setting | Value |
+          |---------|-------|
+          | Selected devices | $total |
+          | A14 / A15 / A16 | $a14 / $a15 / $a16 |
+          | Root implementation | SukiSU builtin |
+          | KPM | Enabled |
+          | SUSFS | Enabled |
+          | BBG | Disabled |
+          | NoMount | Disabled |
+          | Installer | Non-interactive; no volume-key selection |
+          
+          ## Downloads
+          EOF
+          
+          for asset in "${assets[@]}"; do
+            name="$(basename "$asset")"
+            sha="$(sha256sum "$asset" | awk '{print $1}')"
+            printf -- '- %s — SHA256: %s\n' "$name" "$sha" >> release_notes.md
+          done
 
-          echo "Generated 00_CHECKSUMS.txt:"
-          cat 00_CHECKSUMS.txt
+          {
+            echo "RELEASE_TAG=sukisu-susfs-r${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+            echo "RELEASE_TITLE=SukiSU builtin + SUSFS + KPM · A14/A15/A16"
+          } >> "$GITHUB_ENV"
 
-      - name: 📥 Generate Downloads Index
+      - name: 🚀 Create GitHub release
         shell: bash
         run: |
           set -euo pipefail
-
-          {
-            echo "# 📥 OnePlus Kernel Downloads"
-            echo ""
-            echo "> Select the ZIP matching your exact **device**, **OS version**, and **kernel base**."
-            echo ""
-            echo "## ⚠️ Important"
-            echo ""
-            echo "- Flashing the wrong ZIP may cause bootloop."
-            echo "- Back up your current boot/init_boot/vendor_boot before flashing."
-            echo "- Use Kernel Flasher or another trusted flashing method."
-            echo "- If switching from Magisk, APatch, KernelSU, SukiSU, or another fork, clean old root leftovers carefully."
-            echo ""
-            echo "## Quick Guide"
-            echo ""
-            echo "| What to check | Example |"
-            echo "|---|---|"
-            echo "| **Device** | \`OP12\`, \`OP13r\`, \`OP-NORD-4\` |"
-            echo "| **OS Version** | \`A16\` |"
-            echo "| **Kernel Base** | \`android15-6.6.30\`, \`android14-6.1.75\` |"
-            echo "| **Root Type** | \`SUKISU\` |"
-            echo ""
-          } > 00_DOWNLOADS.md
-
-          for os in A16; do
-            mapfile -t files < <(find downloaded-artifacts -maxdepth 1 -type f -name "*_${os}_*.zip" | sort)
-
-            if [ "${#files[@]}" -eq 0 ]; then
-              continue
-            fi
-
-            {
-              echo "## ${os}"
-              echo ""
-              echo "| Device | Kernel | Root | NoMount | Download | SHA256 |"
-              echo "|---|---|---|---|---|---|"
-            } >> 00_DOWNLOADS.md
-
-            for file in "${files[@]}"; do
-              name="$(basename "$file")"
-              zipname="${name%.zip}"
-              rest="${zipname#AK3_}"
-
-              IFS='_' read -ra parts <<< "$rest"
-
-              model="${parts[0]:-unknown}"
-              os_version="${parts[1]:-unknown}"
-              kernel_version="${parts[2]:-unknown}"
-              ksu_type="${parts[3]:-unknown}"
-              ksu_ver="${parts[4]:-unknown}"
-
-              nm_ver="none"
-              if [ "${parts[5]:-}" = "NoMount" ]; then
-                nm_ver="${parts[6]:-unknown}"
-              fi
-
-              sha="$(sha256sum "$file" | awk '{print $1}')"
-              short_sha="${sha:0:12}"
-              asset_url="${{ github.server_url }}/${{ github.repository }}/releases/download/${{ env.NEW_TAG }}/${name}"
-
-              echo "| \`${model}\` | \`${kernel_version}\` | \`${ksu_type}-${ksu_ver}\` | \`${nm_ver}\` | [Download](${asset_url}) | \`${short_sha}...\` |" >> 00_DOWNLOADS.md
-            done
-
-            echo "" >> 00_DOWNLOADS.md
-          done
-
-          {
-            echo "---"
-            echo ""
-            echo "## 🔐 Full SHA256 Checksums"
-            echo ""
-            echo "Use \`00_CHECKSUMS.txt\` from this release to verify downloads."
-            echo ""
-            echo '```bash'
-            echo "sha256sum -c 00_CHECKSUMS.txt"
-            echo '```'
-          } >> 00_DOWNLOADS.md
-
-          echo "Generated 00_DOWNLOADS.md:"
-          cat 00_DOWNLOADS.md
-
-      - name: 📝 Generate Device List and Final Release Notes
-        id: generate-notes
-        run: |
-          echo "=== Start building the release notes ==="
-          
-          rm -f ./downloaded-artifacts/ccache-binary.zip
-          
-          declare -A device_info
-          
-          JSON_BUILD_DATA=$(jq -c '.' ./downloaded-artifacts/matrix.json)
-          
-          for file in $(find downloaded-artifacts -maxdepth 1 -name "*.zip" -type f | sort); do
-            if [ -f "$file" ]; then
-              zipname=$(basename "$file" .zip)
-              rest="${zipname#AK3_}"
-              IFS='_' read -ra parts <<< "$rest"
-              model="${parts[0]}"
-              os_version="${parts[1]}"
-              kernel_version="${parts[2]}"
-              ksu_type="${parts[3]}"
-              ksu_ver="${parts[4]}"
-              if [ "${parts[5]:-}" = "NoMount" ]; then
-                nm_ver="${parts[6]:-unknown}"
-              else
-                nm_ver="none"
-              fi
-              full_model="${model}_${os_version}_${kernel_version}"
-              device_info["$full_model"]="$model|$os_version|$kernel_version|$ksu_type|$ksu_ver|$nm_ver|$zipname"
-            fi
-          done
-          
-          ksu_type="${{ fromJSON(needs.set-op-model.outputs.ksu_options_normalized)[0].type }}"
-          ksu_ref="${{ fromJSON(needs.set-op-model.outputs.ksu_options_normalized)[0].hash }}"
-          ksu_resolved_hash="${{ needs.set-op-model.outputs.ksu_resolved_hash }}"
-          
-          OPTIMIZE_LEVEL="${{ inputs.optimize_level }}"
-          CLEAN_BUILD="${{ inputs.clean_build }}"
-          
-          
-          
-          MOD_REPO="Bouteillepleine/NoMount-Suite"
-          MOD_JSON=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/${MOD_REPO}/releases/latest" 2>/dev/null || true)
-          MOD_ASSET=$(printf '%s' "$MOD_JSON" | grep -oE '"name": *"00_NoMount-Module-[^"]+\.zip"' | head -1 | sed 's/.*"\(00_NoMount[^"]*\)"/\1/')
-          MOD_URL=$(printf '%s' "$MOD_JSON" | grep -oE '"browser_download_url": *"[^"]*/00_NoMount-Module-[^"]+\.zip"' | head -1 | sed 's/.*: *"//; s/"$//')
-          if [ -z "$MOD_ASSET" ]; then
-            MOD_VER=$(curl -fsSL "https://raw.githubusercontent.com/${MOD_REPO}/main/module/module.prop" 2>/dev/null | awk -F= '/^version=/{print $2}')
-            MOD_VER="${MOD_VER:-v1.0.5}"
-            MOD_ASSET="00_NoMount-Module-${MOD_VER}.zip"
-          fi
-          if [ -z "$MOD_URL" ]; then
-            MOD_URL="${{ github.server_url }}/${MOD_REPO}/releases/latest"
-            echo "::warning::Could not read the NoMount Suite asset URL from ${MOD_REPO}; linking the releases page instead."
-          fi
-          MOD_VER=$(printf '%s' "$MOD_ASSET" | sed 's/^00_NoMount-Module-//; s/\.zip$//')
-          echo "NoMount Suite asset: $MOD_ASSET"
-          echo "NoMount Suite URL:   $MOD_URL"
-
-          cat << EOF > release_notes.md
-          # SukiSU 📦 NoMount (v$NOMOUNT_VERSION)
-          
-          **A custom OnePlus kernel + a mountless hiding add-on.** Two downloads: flash the kernel, then add the module on top.
-
-          ---
-
-          ## 🧩 This release is **two** things
-
-          | | Download | Where it's from | How to install |
-          |---|---|---|---|
-          | 1️⃣ **Kernel** | \`AK3_<device>_…zip\` (pick yours below) | built by this repo's CI | Kernel Flasher / SukiSU Manager |
-          | 2️⃣ **NoMount Suite** | \`$MOD_ASSET\` | the separate [NoMount project](${{ github.server_url }}/${MOD_REPO}/releases/latest), mirrored into the Assets below so both downloads are on one page | SukiSU Manager → Modules → Install from storage |
-
-          > The kernel has NoMount **compiled in but dormant** — the **NoMount Suite module activates it**. You need both.
-
-          ## 🔴 REQUIRED — Step 2: install NoMount Suite
-
-          After flashing the kernel and rebooting:
-
-
-          Then: SukiSU Manager → **Modules → Install from storage** → select \`$MOD_ASSET\` → **reboot**.
-
-          > _The copy in the Assets below is pinned to \`$MOD_VER\` and does not update itself. The [NoMount project's own release](${{ github.server_url }}/${MOD_REPO}/releases/latest) is always current, and once installed the Suite offers its own in-app update._
-          > _One metamodule at a time: remove any existing metamodule and reboot before installing this one._
-
-          ---
-
-          ## 📦 Built Devices (${#device_info[@]} total)
-
-          **Feature key:** 🐦 HMBIRD · 🫥 NoMount · 🚀 BBR · 🛡️ BBG · 🌐 TTL · 🧱 IP_SET & IPv6 NAT · 🔧 Unicode Fix · 💻 Droidspaces · 🔃 NTSync
-
-          > 6.12 kernels ship a leaner set (no BBG/Droidspaces/NTSync); SM8750/MT6991 devices add HMBIRD.
-
-          <details>
-          <summary>📥 Expand the full list of ${#device_info[@]} device downloads</summary>
-
-          | Model | OS Version | Kernel Version | Features |
-          |-------|------------|----------------|----------|
-          EOF
-          
-          while IFS= read -r full_key; do
-            [ -z "$full_key" ] && continue
-            
-            IFS='|' read -r model os_ver kernel_ver _ _ _ zipfile <<< "${device_info["$full_key"]}"
-            
-            full_kv=$(echo "$kernel_ver" | sed 's/^[^-]*-//')
-            possible_orig_model="${model}-${full_kv}"
-            feature_flags=$(jq -r --arg MODEL "$model" --arg ORIG_MODEL "$possible_orig_model" --arg OS "$os_ver" '
-              ([ .[] | select(.model == $ORIG_MODEL and .os_version == $OS) ][0]) //
-              ([ .[] | select(.model == $MODEL      and .os_version == $OS) ][0]) |
-              "\(.hmbird // false)\t\(.NMS // false)\t\(.bbr // false)\t\(.bbr3 // false)\t\(.bbg // false)\t\(.ttl // false)\t\(.ip_set // false)\t\(.unicode // false)\t\(.ds // false)\t\(.ntsync // false)"
-            ' <<< "$JSON_BUILD_DATA")
-            
-            features=()
-            if [[ -z "$feature_flags" ]]; then
-              echo "Warning: No JSON entry found for model: $model" >&2
-              features_str="N/A"
-            else
-              IFS=$'\t' read -r hmbird nms bbr bbr3 bbg ttl ip_set unicode ds ntsync <<< "$feature_flags"
-              
-              [[ "$hmbird" == "true" ]] && features+=("🐦 HMBIRD")
-              [[ "$nms" == "true" ]] && features+=("🫥 NoMount")
-              { [[ "$bbr" == "true" ]] || [[ "$bbr3" == "true" ]]; } && features+=("🚀 BBR")
-              [[ "$bbg" == "true" ]] && features+=("🛡️ BBG")
-              [[ "$ttl" == "true" ]] && features+=("🌐 TTL")
-              [[ "$ip_set" == "true" ]] && features+=("🧱 IP_SET & IPv6 NAT")
-              [[ "$unicode" == "true" ]] && features+=("🔧 Unicode Fix")
-              [[ "$ds" == "true" ]] && features+=("💻 Droidspaces")
-              [[ "$ntsync" == "true" ]] && features+=("🔃 NTSync")
-              
-              total=${#features[@]}
-              if [ $total -eq 0 ]; then
-                features_str="N/A"
-              else
-                features_str=""
-                count=0
-                
-                for item in "${features[@]}"; do
-                  count=$((count + 1))
-                  
-                  features_str+="$item"
-                  
-                  if [ $count -lt $total ]; then
-                    if [ $((count % 3)) -eq 0 ]; then
-                      features_str+="<br>"
-                    else
-                      features_str+="   "
-                    fi
-                  fi
-                done
-              fi
-            fi
-            
-            if [[ "$os_ver" =~ ^A[0-9]+$ ]]; then
-              os_display_version="Android ${os_ver#A}"
-            else
-              os_display_version=$os_ver
-            fi
-            
-            download_url="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${NEW_TAG}/${zipfile}.zip"
-            model_link="[$model]($download_url)"
-            printf "| %s | %-10s | %-16s | %-48s |\n" \
-              "$model_link" "$os_display_version" "$kernel_ver" "$features_str" >> release_notes.md
-          done < <(printf '%s\n' "${!device_info[@]}" | sort)
-          
-          if [ ${#device_info[@]} -gt 0 ]; then
-            first_entry=$(printf '%s\n' "${!device_info[@]}" | sort | head -n1)
-            IFS='|' read -r _ _ _ _ ksu_ver_global _ _ <<< "${device_info["$first_entry"]}"
-          else
-            echo "::error::No device info found!" >&2
-            exit 1
-          fi
-          
-          cat << EOF >> release_notes.md
-
-          </details>
-
-          ---
-
-          ## 🔧 Build Configuration
-          
-          | Component | Version/Setting |
-          |-----------|----------------|
-          EOF
-          ksu_display_value() {
-            local input="$1"
-            local resolved="$2"
-            if [[ "$input" =~ ^[0-9a-f]{40}$ ]]; then
-              echo "$input"
-            else
-              echo "$input ($resolved)"
-            fi
-          }
-          
-          ksu_display=$(ksu_display_value "$ksu_ref" "$ksu_resolved_hash")
-          cat << EOF >> release_notes.md
-          | **SukiSU Branch** | \`$ksu_display\` |
-          | **SukiSU Version** | \`$ksu_ver_global\` |
-          EOF
-          cat << EOF >> release_notes.md
-          | **NoMount Version** | \`$NOMOUNT_VERSION\` |
-          | **Optimization Level** | \`$OPTIMIZE_LEVEL\` |
-          | **Clean Build** | $( [ "$CLEAN_BUILD" = "true" ] && echo "✅ Yes (no ccache)" || echo "❌ No (ccache enabled)" ) |
-          | **Compiler** | Clang (version varies by device) |
-          
-          ### 📌 NoMount Source
-          
-          | Component | Source |
-          |-----------|--------|
-          | NoMount (hookless) | [\`Bouteillepleine/NoMount-Suite\`](https://github.com/Bouteillepleine/NoMount-Suite) |
-          
-          ---
-          
-          ## ✨ Features & Capabilities
-          
-          ### 🔐 Root Management
-          EOF
-          cat << EOF >> release_notes.md
-          - **SukiSU** - Kernel-level root solution
-          EOF
-          cat << EOF >> release_notes.md
-          - **NoMount $NOMOUNT_VERSION** - Mountless (hookless VFS) root hiding
-          EOF
-          if [ "${ksu_ver_global:-0}" -lt 12884 ]; then
-            cat << EOF >> release_notes.md
-          - **Manual Hooks** - scope_min_manual_hooks_v1.4 for better compatibility
-          EOF
-          fi
-          cat << EOF >> release_notes.md
-          ### 🛡️ Hiding & Security
-          - **NoMount (hookless VFS redirection)** — modules served with **no mounts**, so there's no overlay/bind mount for a detector to find (`CONFIG_NOMOUNT=y`).
-          - Ptrace-leak fix (kernels < 5.16), Unicode path fix.
-          
-          ### 🚀 Performance & Networking
-          - BBR, CAKE/PIE qdiscs, WireGuard, IP Set, IPv6 NAT, TTL.
-          - LTO + ccache builds, general memory/I/O/scheduler tuning.
-          
-          ### 🔧 System
-          - HMBIRD SCX (SM8750/MT6991), NTSync, Droidspaces, TMPFS xattr/ACL.
-          
-          ---
-          
-          ## 📱 Manager Applications
-          
-          ### Official Manager
-          EOF
-          cat << EOF >> release_notes.md
-          - **SukiSU Manager** *(match the kernel by COMMIT, not just version — see \`SukiSU Branch\` in Build Configuration above; the bundled APK's filename carries the same short sha)*
-            → [GitHub Release](https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases)
-          > ⚠️ **Do not let the manager update itself past this kernel.** The version number does not pin the uapi: a manager and a driver can both report the same version and still disagree, which the manager reports as *"Manager uapi version (N) and driver uapi version (M) mismatch"* and root management stops working. Install the APK from **this** release's Assets, and reflash a matching kernel before taking a newer one.
-          EOF
-          cat << EOF >> release_notes.md
-          ### Recommended Flasher
-          - **Kernel Flasher** (Required for flashing AnyKernel3 zips and backups and OTA)  
-            → [GitHub Release](https://github.com/fatalcoder524/KernelFlasher/releases)
-          
-          ---
-          
-          ## 📥 Installation Instructions
-          
-          ### Prerequisites
-          - Unlocked bootloader.
-          - Backup your current boot image.
-          - Have root access using Magisk / KernelSU / APatch (any fork).
-          
-          ### Via Kernel Flasher
-          1. Download the correct AnyKernel3 ZIP for your device.
-          2. Flash the ZIP to the active slot using Kernel Flasher.
-          3. Install the SukiSU Manager APK, same version as mentioned in the AnyKernel3 ZIP name.
-          4. Open the SukiSU app.
-          5. In **SukiSU Manager**, install the **NoMount Suite** module (Modules → Install from storage → the NoMount Suite ZIP from this release). Remove any existing metamodule and reboot first if you have one.
-          6. Reboot the device.
-
-          > **NoMount is built into the kernel** and driven by the **NoMount Suite** metamodule (included in this release). Flash the kernel ZIP, flash NoMount Suite, then reboot — hiding is served **mountlessly**, with no overlay mounts.
-
-          ---
-          
-          ## 📜 Changelog
-
-          See the [Releases page](${{ github.server_url }}/${{ github.repository }}/releases) for the full history.
-          
-          ---
-          
-          ## 🙏 Credits
-          
-          **SukiSU Team**, **NoMount** (Bouteillepleine & Contributors, on maxsteeel's original), **WildKernels**, **OnePlus** (kernel source), and community testers.
-          
-          EOF
-          
-          cat << EOF >> release_notes.md
-
-          ---
-          <sub>Build: $(date -u '+%Y-%m-%d %H:%M UTC') · run \`${{ github.run_id }}\` · [workflow log](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})</sub>
-          EOF
-          echo "--- Final Release Notes ---"
-          cat release_notes.md
-
-      - name: 🚀 Create GitHub Release
-        run: |
-          gh release create "${{ env.NEW_TAG }}" \
-            --repo "${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}" \
-            --target "${{ github.sha }}" \
-            --title "${{ env.RELEASE_NAME }}" \
-            --notes-file release_notes.md \
-            --draft
-
-      - name: 📤 Upload Release Assets Dynamically
-        run: |
-          for file in ./downloaded-artifacts/*.zip; do
-            if [ -f "$file" ]; then
-              echo "Uploading $file..."
-              gh release upload "${{ env.NEW_TAG }}" "$file" --clobber
-            fi
-          done
-          for meta in 00_CHECKSUMS.txt 00_DOWNLOADS.md; do
-            if [ -f "$meta" ]; then
-              echo "Uploading $meta..."
-              gh release upload "${{ env.NEW_TAG }}" "$meta" --clobber
-            fi
-          done
+          mapfile -d '' assets < <(find ./downloaded-artifacts -maxdepth 1 -type f -name 'AK3_*.zip' -print0 | sort -z)
+          gh release create "$RELEASE_TAG" "${assets[@]}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
+            --title "$RELEASE_TITLE" \
+            --notes-file release_notes.md
 
       - name: 📊 Release summary
-        if: success()
+        shell: bash
         run: |
-          cat >> $GITHUB_STEP_SUMMARY << EOF
-          
-          ---
-          
-          ## 🎉 Release Created Successfully
-          
-          **Tag:** [\`${{ env.NEW_TAG }}\`](${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ env.NEW_TAG }})  
-          **Kernels:** $(find ./downloaded-artifacts -maxdepth 1 -name "*.zip" -type f | wc -l)
-          
-          ### 📦 Assets
-          EOF
-          
-          for zip in ./downloaded-artifacts/*.zip; do
-            if [ -f "$zip" ]; then
-              name=$(basename "$zip")
-              size=$(stat -c%s "$zip")
-              size_mb=$(echo "scale=2; $size / 1024 / 1024" | bc)
-              echo "- \`$name\` (${size_mb} MB)" >> $GITHUB_STEP_SUMMARY
-            fi
-          done
+          {
+            echo "## 🎉 Release created"
+            echo ""
+            echo "**$RELEASE_TITLE**"
+            echo ""
+            echo "Tag: $RELEASE_TAG"
+            echo ""
+            echo "Defaults: SukiSU builtin, KPM and SUSFS enabled; BBG and NoMount disabled; AK3 flashing is non-interactive."
+          } >> "$GITHUB_STEP_SUMMARY"

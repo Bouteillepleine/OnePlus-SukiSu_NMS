@@ -3,8 +3,8 @@
   <remote fetch="https://git.codelinaro.org/clo/la" name="clo-la"/>
   <default remote="clo-la" revision="dummy_revision" sync-c="true" sync-tags="false"/>
   <remote fetch="https://github.com/OnePlusOSS" name="origin"/>
-  <remote fetch="https://github.com/Bouteillepleine" name="Bouteillepleine"/>
-  <project remote="Bouteillepleine" name="AnyKernel3" path="AnyKernel3" revision="suite"/>
+  <remote fetch="https://github.com/WildKernels" name="wild"/>
+  <project remote="wild" name="AnyKernel3" path="AnyKernel3" revision="287c4b33290704f558edbd169fa955fbe60bb6de"/>
   <project remote="origin" name="android_kernel_oneplus_mt6991" path="kernel-6.6" revision="oneplus/mt6991_b_16.0.0_oneplus_ace5_ultra">
     <linkfile dest="kernel_platform/common" src="."/>
   </project>

@@ -16,6 +16,11 @@ inputs:
     required: false
     type: string
     default: ""
+  susfs_commit_hash_or_branch:
+    description: 'SUSFS branch or commit hash (empty = auto-detect from Android and kernel version)'
+    required: false
+    type: string
+    default: ""
   build_timestamp:
     description: 'Custom kernel build timestamp shown in uname -a (e.g. "Fri Dec 5 02:05:55 UTC 2025"). Leave empty to use the current build time.'
     required: false
@@ -65,6 +70,9 @@ outputs:
   ksu_type:
     description: 'SukiSU Variant'
     value: ${{ steps.save_metadata.outputs.ksu_type }}
+  susfs_version:
+    description: 'SUSFS version string'
+    value: ${{ steps.save_metadata.outputs.susfs_version }}
   build_timestamp:
     description: 'Effective kernel build timestamp used in uname -a'
     value: ${{ steps.save_metadata.outputs.build_timestamp }}
@@ -145,6 +153,8 @@ runs:
         kernel_version="$OP_KERNEL_VERSION"
         os_version="$OP_OS_VERSION"
         hmbird="$OP_HMBIRD"
+        susfs="$OP_SUSFS"
+        kpm="$OP_KPM"
         nms="$OP_NMS"
         opt="$OP_OPT"
         bbg="$OP_BBG"
@@ -227,12 +237,28 @@ runs:
           errors+=("Input 'hmbird' contains invalid characters. Allowed: 'true' or 'false'. Got: '$hmbird'")
         fi
         
+        if [[ -z "$susfs" ]]; then
+          errors+=("Input 'susfs' cannot be empty")
+        elif [[ "$susfs" != "true" && "$susfs" != "false" ]]; then
+          errors+=("Input 'susfs' must be 'true' or 'false'. Got: '$susfs'")
+        fi
+
+        if [[ -z "$kpm" ]]; then
+          errors+=("Input 'kpm' cannot be empty")
+        elif [[ "$kpm" != "true" && "$kpm" != "false" ]]; then
+          errors+=("Input 'kpm' must be 'true' or 'false'. Got: '$kpm'")
+        fi
+
         if [[ -z "$nms" ]]; then
           errors+=("Input 'NMS' cannot be empty")
         elif [[ "$nms" != "true" && "$nms" != "false" ]]; then
           errors+=("Input 'NMS' contains invalid characters. Allowed: 'true' or 'false'. Got: '$nms'")
         fi
         
+        if [[ "$susfs" == "true" && "$nms" == "true" ]]; then
+          errors+=("SUSFS and NoMount cannot be enabled together; set NMS=false when susfs=true")
+        fi
+
         if [[ -z "$opt" ]]; then
           errors+=("Input 'opt' cannot be empty")
         elif [[ "$opt" != "true" && "$opt" != "false" ]]; then
@@ -370,6 +396,7 @@ runs:
         AK3_DIR="$CONFIG_DIR/AnyKernel3"
         DEBUG_ARTIFACTS_DIR="$GITHUB_WORKSPACE/debug_artifacts"
         KERNEL_PATCHES_DIR="$GITHUB_WORKSPACE/kernel_patches"
+        SUSFS_DIR="$GITHUB_WORKSPACE/susfs4ksu"
         KSU_DIR="$KERNEL_PLATFORM_DIR/KernelSU"
         mkdir -p "$ARTIFACTS_DIR"
         mkdir -p "$DEBUG_ARTIFACTS_DIR"
@@ -382,6 +409,7 @@ runs:
         echo "AK3_FOLDER=$AK3_DIR" >> "$GITHUB_ENV"
         echo "DEBUG_ARTIFACTS_FOLDER=$DEBUG_ARTIFACTS_DIR" >> "$GITHUB_ENV"
         echo "KERNEL_PATCHES_FOLDER=$KERNEL_PATCHES_DIR" >> "$GITHUB_ENV"
+        echo "SUSFS_FOLDER=$SUSFS_DIR" >> "$GITHUB_ENV"
         echo "KSU_FOLDER=$KSU_DIR" >> "$GITHUB_ENV"
         
         DEBUG_ZIP_NAME="debug_${OP_MODEL}_${OP_OS_VERSION}.zip"
@@ -434,8 +462,10 @@ runs:
         {
           echo "ANDROID_VER=$ANDROID_VERSION"
           echo "KERNEL_VER=$VERSION.$PATCHLEVEL"
+          echo "KERNEL_SUBLEVEL=$SUBLEVEL"
           echo "TKERNEL_VER=$FULL_VERSION"
           echo "KERNEL_FULL_VER=$ANDROID_VERSION-$FULL_VERSION"
+          echo "SUSFS_KERNEL_BRANCH=gki-$ANDROID_VERSION-$VERSION.$PATCHLEVEL"
         } >> "$GITHUB_ENV"
         
         echo "✅ Detected: $ANDROID_VERSION-$FULL_VERSION"
@@ -747,7 +777,13 @@ runs:
           if [[ "$url" == *"github.com"* ]]; then
               download_url="${url%.git}/archive/refs/heads/${branch}.tar.gz"
           elif [[ "$url" == *"gitlab.com"* ]]; then
-              download_url="${url%.git}/-/archive/${branch}/${repo_name}-${branch}.tar.gz"
+              # GitLab's human-facing /-/archive endpoint can be blocked by
+              # the Cloudflare challenge on GitHub-hosted runners.  The API
+              # archive endpoint serves the same ref without that challenge.
+              local project_path="${url#https://gitlab.com/}"
+              project_path="${project_path%.git}"
+              project_path="${project_path//\//%2F}"
+              download_url="https://gitlab.com/api/v4/projects/${project_path}/repository/archive.tar.gz?sha=${branch}"
           else
               echo "::error::Unsupported host: $url"
               return 1
@@ -810,6 +846,41 @@ runs:
         retry_clone "https://github.com/Bouteillepleine/kernel_patches.git" "${_pref:-main}" "1" "bouton_kernel_patches"
         echo "kernel_patches ref: ${_pref:-main}"
 
+        if [ "${{ env.OP_SUSFS }}" = true ]; then
+          SUSFS_REF="${{ inputs.susfs_commit_hash_or_branch }}"
+          if [ -z "$SUSFS_REF" ]; then
+            # The SUSFS GKI branches are moving targets.  Their current heads
+            # can change the patch/API without matching the kernel trees in
+            # this matrix, so use the commits validated by WildKernels' last
+            # successful GKI release.  Callers can still override this through
+            # the action input above when validating a newer SUSFS revision.
+            case "$SUSFS_KERNEL_BRANCH" in
+              gki-android12-5.10) SUSFS_REF="ec785f47d49f7b3871ca9356f450411020af7017" ;;
+              gki-android13-5.15) SUSFS_REF="bca0d2333c1a7d717e7278b019d7af7ba1d16005" ;;
+              gki-android14-6.1)  SUSFS_REF="4fc9c1898ea66f51847cdbc0d1473ea4ef525a70" ;;
+              gki-android15-6.6)  SUSFS_REF="937215cb3a1b1f333d764c366c7a49972fa8e7a0" ;;
+              gki-android16-6.12) SUSFS_REF="7d91da2d2ce056d1abf378d9199aaf1072d37ab0" ;;
+              *) SUSFS_REF="$SUSFS_KERNEL_BRANCH" ;;
+            esac
+            echo "Using validated SUSFS ref for ${ANDROID_VER}-${KERNEL_VER}: $SUSFS_REF"
+          else
+            echo "Using requested SUSFS ref: $SUSFS_REF"
+          fi
+
+          if ! retry_fetch_archive "https://gitlab.com/simonpunk/susfs4ksu.git" "$SUSFS_REF"; then
+            echo "::error::Failed to fetch SUSFS ref '$SUSFS_REF'"
+            exit 1
+          fi
+
+          if [ ! -s "$SUSFS_FOLDER/kernel_patches/include/linux/susfs.h" ] || \
+             [ ! -s "$SUSFS_FOLDER/kernel_patches/50_add_susfs_in_${SUSFS_KERNEL_BRANCH}.patch" ]; then
+            echo "::error::SUSFS archive does not contain the files required for ${SUSFS_KERNEL_BRANCH}"
+            exit 1
+          fi
+
+          echo "SUSFS_COMMIT_SHA=$SUSFS_REF" >> "$GITHUB_ENV"
+        fi
+
         echo "BOUTEILLE_KERNEL_PATCHES_FOLDER=$GITHUB_WORKSPACE/bouton_kernel_patches" >> "$GITHUB_ENV"
         echo "BOUTEILLE_BBR3_PATCHES_FOLDER=$GITHUB_WORKSPACE/bouton_kernel_patches/common/bbrv3" >> "$GITHUB_ENV"
 
@@ -843,10 +914,12 @@ runs:
         SUKISU_SETUP_SCRIPT="$(mktemp /tmp/rsksu_setup_XXXXXX.sh)"
         trap 'rm -f "$SUKISU_SETUP_SCRIPT"' EXIT
 
-        echo "Downloading SukiSU setup script..."
+        KSU_INPUT="${{ inputs.ksu_branch_or_hash }}"
+        SUKISU_SETUP_REF="${KSU_INPUT:-main}"
+        echo "Downloading SukiSU setup script from ref: $SUKISU_SETUP_REF"
         if ! curl --fail --location --proto '=https' --tlsv1.2 -LSs \
           --retry 5 --retry-delay 5 --retry-all-errors \
-          "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" \
+          "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/${SUKISU_SETUP_REF}/kernel/setup.sh" \
           -o "$SUKISU_SETUP_SCRIPT"; then
           echo "::error::Failed to download SukiSU setup.sh after retries"
           exit 1
@@ -865,7 +938,6 @@ runs:
 
         chmod +x "$SUKISU_SETUP_SCRIPT"
 
-        KSU_INPUT="${{ inputs.ksu_branch_or_hash }}"
         if [ -z "$KSU_INPUT" ]; then
           echo "No branch/hash provided — using default installer mode."
           bash "$SUKISU_SETUP_SCRIPT"
@@ -892,7 +964,7 @@ runs:
           mkdir -p "$COMMON_KERNEL_FOLDER/include/uapi"
           cp "$KERNEL_PLATFORM_FOLDER/KernelSU/uapi/"*.h "$COMMON_KERNEL_FOLDER/include/uapi/" 2>/dev/null || true
         fi
-        if [ -d "$KSU_KDIR" ]; then
+        if [ "$OP_NMS" = true ] && [ -d "$KSU_KDIR" ]; then
           _nm_inject() {  # $1 = full extern decl text ; $2 = symbol to grep for (whole word)
             while IFS= read -r _f; do
               grep -qF "$1" "$_f" || sed -i "1i $1" "$_f"
@@ -905,12 +977,16 @@ runs:
           while IFS= read -r _f; do
             sed -i '1i #include <linux/types.h>' "$_f"
           done < <(grep -rlwE 'allow_shell|ksu_late_loaded|ksu_no_custom_rc' "$KSU_KDIR" --include='*.c' 2>/dev/null || true)
-          echo "Injected KSU externs (ksu_cred / allow_shell / ksu_late_loaded / ksu_no_custom_rc) + types.h"
+          echo "Injected NoMount compatibility declarations into SukiSU"
         fi
 
         cd "$KERNEL_PLATFORM_FOLDER/KernelSU"
 
         KSU_COMMIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+        if [[ "$KSU_INPUT" =~ ^[0-9a-f]{40}$ ]] && [ "$KSU_COMMIT_SHA" != "$KSU_INPUT" ]; then
+          echo "::error::SukiSU checkout mismatch: expected $KSU_INPUT, got $KSU_COMMIT_SHA"
+          exit 1
+        fi
         COMMITS_COUNT="$(git rev-list --count HEAD 2>/dev/null || true)"
         if [[ ! "$COMMITS_COUNT" =~ ^[0-9]+$ ]]; then
           echo "::warning::Could not determine commit count, using fallback 30000."
@@ -953,8 +1029,14 @@ runs:
 
         {
           printf '%s\n' 'CONFIG_KSU=y'
-          printf '%s\n' 'CONFIG_KPM=n'
+          if [ "$OP_KPM" = true ]; then
+            printf '%s\n' 'CONFIG_KPM=y'
+          else
+            printf '%s\n' 'CONFIG_KPM=n'
+          fi
         } >> "$DEFCONFIG"
+
+        echo "NEED_HOOKS=false" >> "$GITHUB_ENV"
 
         {
           echo "SUKISU"
@@ -962,6 +1044,207 @@ runs:
         } >> "${ARTIFACTS_FOLDER}/${OP_MODEL}_${OP_OS_VERSION}.txt"
 
         echo "✅ SukiSU added (commit: ${KSU_COMMIT_SHA:0:8})"
+        echo "::endgroup::"
+
+    - name: Apply SUSFS Patches
+      if: ${{ env.OP_SUSFS == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "::group::Apply SUSFS patches"
+
+        if ! grep -RqsE '^[[:space:]]*(menu)?config[[:space:]]+KSU_SUSFS\b' "$KSU_FOLDER"; then
+          echo "::error::The selected SukiSU source does not include built-in SUSFS support. Use the SukiSU builtin branch."
+          exit 1
+        fi
+
+        cp "$SUSFS_FOLDER/kernel_patches/fs/"* "$COMMON_KERNEL_FOLDER/fs/"
+        cp "$SUSFS_FOLDER/kernel_patches/include/linux/"* "$COMMON_KERNEL_FOLDER/include/linux/"
+
+        susfs_version="$(grep '#define SUSFS_VERSION' "$COMMON_KERNEL_FOLDER/include/linux/susfs.h" | awk -F'"' '{print $2}' | head -n1)"
+        if [ -z "$susfs_version" ]; then
+          echo "::error::Could not determine SUSFS_VERSION"
+          exit 1
+        fi
+        echo "SUSVER=$susfs_version" >> "$GITHUB_ENV"
+        echo "$susfs_version" >> "${ARTIFACTS_FOLDER}/${OP_MODEL}_${OP_OS_VERSION}.txt"
+        echo "SUSFS version: $susfs_version"
+
+        cd "$COMMON_KERNEL_FOLDER"
+
+        sublevel="${KERNEL_SUBLEVEL:-${TKERNEL_VER##*.}}"
+        if ! [[ "$sublevel" =~ ^[0-9]+$ ]]; then
+          echo "::error::Invalid kernel sublevel: $sublevel"
+          exit 1
+        fi
+        version_key="${ANDROID_VER}-${KERNEL_VER}"
+        echo "Applying SUSFS compatibility preparation for ${version_key}.${sublevel}"
+
+        if { [ "$version_key" = "android12-5.10" ] && [ "$sublevel" -eq 226 ]; } || \
+           { [ "$version_key" = "android13-5.15" ] && [ "$sublevel" -eq 167 ]; }; then
+          if grep -qF 'vm_flags_clear(new_vma, VM_PAD_MASK);' mm/mmap.c; then
+            sed -i 's/\s*vm_flags_clear(new_vma, VM_PAD_MASK);/                new_vma->vm_flags \&= ~VM_PAD_MASK;/' mm/mmap.c
+            if grep -qF 'vm_flags_clear(new_vma, VM_PAD_MASK);' mm/mmap.c; then
+              echo "::error::Failed to apply the VM_PAD_MASK compatibility fix"
+              exit 1
+            fi
+          fi
+        fi
+
+        case "$version_key" in
+          android12-5.10)
+            if [ "$sublevel" -le 43 ]; then
+              perl -i -pe 's/(int|size_t)\s+this_len\s*=\s*min_t\s*\(\s*\1\s*,/size_t this_len = min_t(size_t,/' fs/proc/base.c
+            fi
+            if [ "$sublevel" -le 117 ]; then
+              perl -0777 -i -pe 's{(if \(inode\) \{\n)\t\t/\*\n(\t\t \*[^\n]*\n)+\t\t \*/\n}{$1}g; s{^[[:space:]]*u32 mask = mark->mask & IN_ALL_EVENTS;\n}{}m' fs/notify/fdinfo.c
+              perl -i -pe 's/\bmask,\s*mark->ignored_mask/inotify_mark_user_mask(mark)/g; s/ignored_mask:%x/ignored_mask:0/g' fs/notify/fdinfo.c
+              perl -0777 -i -pe 's{^static void inotify_fdinfo\(struct seq_file \*m, struct fsnotify_mark \*mark\)$}{static inline u32 inotify_mark_user_mask(struct fsnotify_mark *mark)\n{\n\treturn mark->mask \& IN_ALL_EVENTS;\n}\n\n$&}m' fs/notify/fdinfo.c
+            fi
+            ;;
+          android13-5.15)
+            if [ "$sublevel" -le 41 ]; then
+              grep -qxF '#include <linux/mnt_idmapping.h>' fs/namespace.c || sed -i '/^#include <linux\/shmem_fs.h>$/a #include <linux/mnt_idmapping.h>' fs/namespace.c
+              grep -qxF '#include <linux/mnt_idmapping.h>' fs/open.c || sed -i '/^#include <linux\/compat.h>$/a #include <linux/mnt_idmapping.h>' fs/open.c
+              perl -0777 -i -pe 's{(if \(inode\) \{\n)\t\t/\*\n(\t\t \*[^\n]*\n)+\t\t \*/\n}{$1}g; s{^[[:space:]]*u32 mask = mark->mask & IN_ALL_EVENTS;\n}{}m' fs/notify/fdinfo.c
+              perl -i -pe 's/\bmask,\s*mark->ignored_mask/inotify_mark_user_mask(mark)/g; s/ignored_mask:%x/ignored_mask:0/g' fs/notify/fdinfo.c
+              perl -0777 -i -pe 's{^static void inotify_fdinfo\(struct seq_file \*m, struct fsnotify_mark \*mark\)$}{static inline u32 inotify_mark_user_mask(struct fsnotify_mark *mark)\n{\n\treturn mark->mask \& IN_ALL_EVENTS;\n}\n\n$&}m' fs/notify/fdinfo.c
+            fi
+            if [ "$sublevel" -ge 197 ]; then
+              sed -i '/^#include <trace\/hooks\/blk.h>$/d' fs/namespace.c
+              sed -i '/^#include <trace\/hooks\/mm.h>$/d' fs/proc/task_mmu.c
+            fi
+            ;;
+          android14-6.1)
+            if [ "$sublevel" -le 25 ]; then
+              grep -qxF '#include <trace/hooks/sched.h>' fs/proc/base.c || sed -i '/^#include <trace\/events\/oom.h>$/a #include <trace/hooks/sched.h>' fs/proc/base.c
+            fi
+            if [ "$sublevel" -le 141 ]; then
+              grep -qxF '#include <linux/dma-buf.h>' fs/proc/base.c || sed -i '/^#include <linux\/cpufreq_times.h>$/a #include <linux/dma-buf.h>' fs/proc/base.c
+            fi
+            if [ "$sublevel" -ge 157 ]; then
+              sed -i '/^#include <trace\/hooks\/blk.h>$/d' fs/namespace.c
+              sed -i '/^#include <trace\/hooks\/fs.h>$/,+1 d' fs/super.c
+            fi
+            ;;
+          android15-6.6)
+            if ! grep -qxF '#include <trace/hooks/fs.h>' fs/namespace.c; then
+              sed -i '/#include <trace\/hooks\/blk.h>/a #include <trace/hooks/fs.h>' fs/namespace.c
+            fi
+            if [ -f include/linux/page_size_compat.h ] && \
+               ! grep -qxF 'extern void __fold_filemap_fixup_entry(struct vma_iterator *iter, unsigned long *end);' include/linux/page_size_compat.h; then
+              patch -p1 < "$KERNEL_PATCHES_FOLDER/common/backports/fold_fixup_entries.patch"
+            fi
+            if [ "$sublevel" -le 30 ] && grep -qF 'if (vma->vm_end > last_vma_end)' fs/proc/task_mmu.c; then
+              perl -i -0pe 's/\t\t\tif \(vma->vm_end > last_vma_end\)\n\t\t\t\tsmap_gather_stats\(vma, &mss, last_vma_end\);/\t\t\tif (vma->vm_end > last_vma_end) {\n\t\t\t\tsmap_gather_stats(vma, \&mss, last_vma_end);\n\t\t\t\tlast_vma_end = vma->vm_end;\n\t\t\t}/' fs/proc/task_mmu.c
+            fi
+            if [ "$sublevel" -le 92 ]; then
+              grep -qxF '#include <linux/dma-buf.h>' fs/proc/base.c || sed -i '/^#include <linux\/cpufreq_times.h>$/a #include <linux/dma-buf.h>' fs/proc/base.c
+            fi
+            if [ "$sublevel" -le 57 ]; then
+              grep -qxF '#include <linux/zswap.h>' mm/memory.c || sed -i '/^#include <linux\/sched\/sysctl.h>$/a #include <linux/zswap.h>' mm/memory.c
+            fi
+            ;;
+          android16-6.12)
+            if [ "$sublevel" -ge 58 ]; then
+              sed -i '/^#include <linux\/dma-buf.h>$/d' fs/exec.c
+            fi
+            if [ "$sublevel" -ge 69 ]; then
+              sed -i 's/vma_data_pages/vma_pages/g' fs/proc/task_mmu.c
+            fi
+            ;;
+          *)
+            echo "::error::No SUSFS compatibility profile for $version_key"
+            exit 1
+            ;;
+        esac
+
+        patch -p1 --forward --fuzz=3 < "$SUSFS_FOLDER/kernel_patches/50_add_susfs_in_${SUSFS_KERNEL_BRANCH}.patch"
+
+        if find . -type f -name '*.rej' -print -quit | grep -q .; then
+          echo "::error::SUSFS patch left reject files"
+          find . -type f -name '*.rej' -print
+          exit 1
+        fi
+
+        if grep -q 'VMA_PAD_START(' fs/proc/task_mmu.c && \
+           ! grep -qE '#include <linux/pgsize_migration(_inline)?\.h>|define VMA_PAD_START' fs/proc/task_mmu.c; then
+          sed -i '1a #ifndef VMA_PAD_START\n#define VMA_PAD_START(vma) ((vma)->vm_end)\n#endif' fs/proc/task_mmu.c
+          if ! grep -q '^#define VMA_PAD_START(vma) ((vma)->vm_end)$' fs/proc/task_mmu.c; then
+            echo "::error::Failed to add VMA_PAD_START fallback"
+            exit 1
+          fi
+        fi
+
+        case "$version_key" in
+          android12-5.10)
+            if [ "$sublevel" -le 43 ]; then
+              sed -i 's/^size_t this_len = min_t(size_t, count, PAGE_SIZE);$/int this_len = min_t(int, count, PAGE_SIZE);/' fs/proc/base.c
+            fi
+            [ "$sublevel" -le 209 ] && sed -i 's/goto show_pad;/return 0;/' fs/proc/task_mmu.c
+            ;;
+          android13-5.15)
+            if [ "$sublevel" -le 41 ]; then
+              sed -i '/^#include <linux\/mnt_idmapping.h>$/d' fs/namespace.c fs/open.c
+              sed -i 's|i_uid_into_mnt(i_user_ns(&fi->inode), &fi->inode).val|i_uid_into_mnt(\&init_user_ns, \&fi->inode).val|g' fs/susfs.c
+              sed -i 's|i_uid_into_mnt(i_user_ns(inode), inode).val|i_uid_into_mnt(\&init_user_ns, inode).val|g' fs/susfs.c
+            fi
+            if [ "$sublevel" -ge 197 ]; then
+              grep -qxF '#include <trace/hooks/blk.h>' fs/namespace.c || sed -i '/^#include "internal.h"$/a #include <trace/hooks/blk.h>' fs/namespace.c
+            fi
+            if [ "$sublevel" -ge 206 ]; then
+              grep -qxF '#include <trace/hooks/mm.h>' fs/proc/task_mmu.c || sed -i '/^#include <linux\/pkeys.h>$/a #include <trace/hooks/mm.h>' fs/proc/task_mmu.c
+            fi
+            [ "$sublevel" -le 148 ] && sed -i 's/goto show_pad;/return 0;/' fs/proc/task_mmu.c
+            ;;
+          android14-6.1)
+            [ "$sublevel" -le 25 ] && sed -i '/^#include <trace\/hooks\/sched.h>$/d' fs/proc/base.c
+            [ "$sublevel" -le 141 ] && sed -i '/^#include <linux\/dma-buf.h>$/d' fs/proc/base.c
+            if [ "$sublevel" -ge 157 ]; then
+              grep -qxF '#include <trace/hooks/blk.h>' fs/namespace.c || sed -i '/^#include "internal.h"$/a #include <trace/hooks/blk.h>' fs/namespace.c
+              grep -qxF '#include <trace/hooks/fs.h>' fs/super.c || sed -i '/^#include "internal.h"$/a #include <trace/hooks/fs.h>' fs/super.c
+            fi
+            [ "$sublevel" -le 75 ] && sed -i 's/goto show_pad;/return 0;/' fs/proc/task_mmu.c
+            ;;
+          android15-6.6)
+            [ "$sublevel" -le 92 ] && sed -i '/^#include <linux\/dma-buf.h>$/d' fs/proc/base.c
+            [ "$sublevel" -le 57 ] && sed -i '/^#include <linux\/zswap.h>$/d' mm/memory.c
+            ;;
+          android16-6.12)
+            if [ "$sublevel" -ge 58 ] && ! grep -qxF '#include <linux/dma-buf.h>' fs/exec.c; then
+              sed -i '0,/^#include /s//&\n#include <linux\/dma-buf.h>/' fs/exec.c
+            fi
+            [ "$sublevel" -ge 69 ] && sed -i 's/vma_pages/vma_data_pages/g' fs/proc/task_mmu.c
+            ;;
+        esac
+
+        if [ "$(printf '%s\n' '6.6' "$KERNEL_VER" | sort -V | head -n1)" = '6.6' ]; then
+          while IFS= read -r selinux_hide; do
+            if grep -q 'extern void security_dump_masked_av_fn' "$selinux_hide"; then
+              sed -i 's/if (security_dump_masked_av_fn)/if (\&security_dump_masked_av_fn)/g; s/if (security_dump_masked_av_fn != NULL)/if (\&security_dump_masked_av_fn != NULL)/g; s/if (context_struct_compute_av_fn)/if (\&context_struct_compute_av_fn)/g; s/if (context_struct_compute_av_fn != NULL)/if (\&context_struct_compute_av_fn != NULL)/g' "$selinux_hide"
+            else
+              sed -i 's/if (security_dump_masked_av_fn)/if (security_dump_masked_av_fn != NULL)/g; s/if (context_struct_compute_av_fn)/if (context_struct_compute_av_fn != NULL)/g' "$selinux_hide"
+            fi
+            sed -i 's/^static int security_context_to_sid_with_policy/int security_context_to_sid_with_policy/g; s/^static int security_sid_to_context_with_policy/int security_sid_to_context_with_policy/g; s/^static void security_compute_av_user_with_policy/void security_compute_av_user_with_policy/g' "$selinux_hide"
+          done < <(find "$KERNEL_PLATFORM_FOLDER" -type f -name selinux_hide.c -print)
+        fi
+
+        DEFCONFIG="$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig"
+        sed -i '/^CONFIG_KSU_SUSFS/d; /^# CONFIG_KSU_SUSFS/d' "$DEFCONFIG" || true
+        cat >> "$DEFCONFIG" <<'EOF'
+        CONFIG_KSU_SUSFS=y
+        CONFIG_KSU_SUSFS_SUS_PATH=y
+        CONFIG_KSU_SUSFS_SUS_MOUNT=y
+        CONFIG_KSU_SUSFS_SUS_KSTAT=y
+        CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+        CONFIG_KSU_SUSFS_ENABLE_LOG=y
+        CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+        CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+        CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+        CONFIG_KSU_SUSFS_SUS_MAP=y
+        EOF
+
+        echo "✅ SUSFS patches applied"
         echo "::endgroup::"
 
     - name: Apply NoMount (hookless) Patch
@@ -1431,6 +1714,7 @@ runs:
         echo "kernel_version=${{ env.KERNEL_FULL_VER }}" >> "$GITHUB_OUTPUT"
         echo "ksu_version=${KSUVER:-unknown}" >> "$GITHUB_OUTPUT"
         echo "ksu_type=${{ inputs.ksu_type }}" >> "$GITHUB_OUTPUT"
+        echo "susfs_version=${SUSVER:-disabled}" >> "$GITHUB_OUTPUT"
         echo "build_timestamp=${EFFECTIVE_BUILD_TIMESTAMP:-unknown}" >> "$GITHUB_OUTPUT"
 
     - name: Customize Kernel Branding
@@ -1744,11 +2028,19 @@ runs:
 
         make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" O="$OUT" olddefconfig
 
-        for sym in CONFIG_KSU; do
+        required_symbols=(CONFIG_KSU)
+        [ "$OP_KPM" = true ] && required_symbols+=(CONFIG_KPM)
+        [ "$OP_SUSFS" = true ] && required_symbols+=(CONFIG_KSU_SUSFS)
+        for sym in "${required_symbols[@]}"; do
           grep -q "^${sym}=y" "$OUT/.config" \
-            || { echo "::error::${sym} was dropped by olddefconfig (not defined by the KSU source?)"; exit 1; }
+            || { echo "::error::${sym} was dropped by olddefconfig; requested feature is not present in the selected source"; exit 1; }
         done
         
+        if [ "$OP_BBG" != true ] && grep -q '^CONFIG_BBG=y' "$OUT/.config"; then
+          echo "::error::CONFIG_BBG is enabled although this device explicitly sets bbg=false"
+          exit 1
+        fi
+
         KCFLAGS="$KCFLAGS -Wno-error -pipe ${KCFLAGS_EXTRA}"
         KCPPFLAGS="$KCPPFLAGS -DCONFIG_OPTIMIZE_INLINING"
         
@@ -1826,6 +2118,65 @@ runs:
         echo "============================================"
         ccache -s
         echo "============================================"
+        echo "::endgroup::"
+
+    - name: Patch Kernel Image for KPM
+      if: ${{ env.OP_KPM == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "::group::Patch kernel Image for KPM"
+
+        IMAGE_PATH="$COMMON_KERNEL_FOLDER/out/arch/arm64/boot/Image"
+        if [ -f "$KERNEL_PLATFORM_FOLDER/out/$OP_ANDROID_VERSION-$OP_KERNEL_VERSION/dist/Image" ]; then
+          IMAGE_PATH="$KERNEL_PLATFORM_FOLDER/out/$OP_ANDROID_VERSION-$OP_KERNEL_VERSION/dist/Image"
+        elif [ -f "$KERNEL_PLATFORM_FOLDER/bazel-bin/common/kernel_aarch64/Image" ]; then
+          IMAGE_PATH="$KERNEL_PLATFORM_FOLDER/bazel-bin/common/kernel_aarch64/Image"
+        fi
+
+        if [ ! -s "$IMAGE_PATH" ]; then
+          echo "::error::Cannot patch KPM: kernel Image not found at $IMAGE_PATH"
+          exit 1
+        fi
+
+        ORIGINAL_SIZE="$(stat -c %s "$IMAGE_PATH")"
+        KPM_WORKDIR="$(mktemp -d /tmp/kpm_patch_XXXXXX)"
+        trap 'rm -rf "$KPM_WORKDIR"' EXIT
+
+        curl --fail --location --proto '=https' --tlsv1.2 -LSs \
+          --retry 5 --retry-delay 5 --retry-all-errors \
+          'https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/download/0.13.0/patch_linux' \
+          -o "$KPM_WORKDIR/patch_linux"
+
+        if [ "$(stat -c %s "$KPM_WORKDIR/patch_linux")" -ne 4279368 ]; then
+          echo "::error::Unexpected KPM patcher size"
+          exit 1
+        fi
+        echo 'ea4884140c0ee8835bc79b67e4c9b46094c6640d6407f0aab34d2df4e28e0450  patch_linux' \
+          | (cd "$KPM_WORKDIR" && sha256sum -c -)
+
+        cp "$IMAGE_PATH" "$KPM_WORKDIR/Image"
+        chmod +x "$KPM_WORKDIR/patch_linux"
+        (cd "$KPM_WORKDIR" && ./patch_linux)
+
+        if [ ! -s "$KPM_WORKDIR/oImage" ]; then
+          echo "::error::KPM patcher did not produce oImage"
+          exit 1
+        fi
+        if ! file "$KPM_WORKDIR/oImage" | grep -qi 'ARM64'; then
+          echo "::error::KPM output is not an ARM64 kernel Image"
+          file "$KPM_WORKDIR/oImage"
+          exit 1
+        fi
+
+        PATCHED_SIZE="$(stat -c %s "$KPM_WORKDIR/oImage")"
+        if [ "$PATCHED_SIZE" -lt "$ORIGINAL_SIZE" ]; then
+          echo "::error::KPM output is smaller than the original Image"
+          exit 1
+        fi
+
+        mv -f "$KPM_WORKDIR/oImage" "$IMAGE_PATH"
+        echo "✅ KPM patch applied to $IMAGE_PATH"
         echo "::endgroup::"
 
     - name: 📊 ccache Post-Build Statistics
@@ -1977,13 +2328,21 @@ runs:
         
         sed -i 's/do.check_boot_version=.*/do.check_boot_version=1/' anykernel.sh
         
+        # Packaging contract: flashing must be non-interactive.  The volume-key
+        # helpers live in tools/ak3-core.sh in newer AK3 revisions, so audit the
+        # whole installer instead of checking only anykernel.sh.
+        if grep -ERq --include='*.sh' \
+          'keycheck\.timeout|handle_input|KEY_VOLUME(UP|DOWN)|getevent' \
+          anykernel.sh tools; then
+          echo "::error::AnyKernel3 contains volume-key input code; refusing to package an interactive installer"
+          exit 1
+        fi
         
         ZIP_MODEL=$(echo "$OP_MODEL" | sed 's/-[0-9]\+\.[0-9]\+\.[0-9]\+$//')
-        if [ "${{ env.OP_NMS }}" = true ]; then
-          ZIP_NAME="AK3_${ZIP_MODEL}_${OP_OS_VERSION}_${KERNEL_FULL_VER}_${{ inputs.ksu_type }}_${KSUVER:-unknown}.zip"
-        else
-          ZIP_NAME="AK3_${ZIP_MODEL}_${OP_OS_VERSION}_${KERNEL_FULL_VER}_${{ inputs.ksu_type }}_${KSUVER:-unknown}.zip"
-        fi
+        ZIP_NAME="AK3_${ZIP_MODEL}_${OP_OS_VERSION}_${KERNEL_FULL_VER}_${{ inputs.ksu_type }}_${KSUVER:-unknown}"
+        [ "${{ env.OP_SUSFS }}" = true ] && ZIP_NAME="${ZIP_NAME}_SuSFS_${SUSVER:-unknown}"
+        [ "${{ env.OP_KPM }}" = true ] && ZIP_NAME="${ZIP_NAME}_KPM"
+        ZIP_NAME="${ZIP_NAME}.zip"
         mkdir -p "$ARTIFACTS_FOLDER"
         
         echo "Creating flashable ZIP: $ZIP_NAME"
@@ -2032,9 +2391,12 @@ runs:
           echo "Build Host: ${{ env.BUILD_HOST }}"
           echo "SukiSU Version: ${KSUVER:-unknown}"
           echo "SukiSU commit SHA: ${KSU_SHA:-unknown}"
-          if [ "${{ env.OP_NMS }}" = true ]; then
-            echo "NoMount Version: ${NMVER:-unknown}"
+          if [ "${{ env.OP_SUSFS }}" = true ]; then
+            echo "SUSFS Version: ${SUSVER:-unknown}"
+            echo "SUSFS source ref: ${SUSFS_COMMIT_SHA:-unknown}"
           fi
+          echo "KPM: ${{ env.OP_KPM }}"
+          echo "NoMount: ${{ env.OP_NMS }}"
           echo "Optimization: ${{ inputs.optimize_level }}"
           echo "Clean Build: ${{ inputs.clean }}"
           echo ""
@@ -2066,7 +2428,8 @@ runs:
         
         SUM_HEAD="🎯 <b>${{ env.OP_MODEL }}</b> — ${{ steps.save_metadata.outputs.kernel_version }}"
         SUM_HEAD="${SUM_HEAD} · ⚡SukiSU ${KSUVER:-?}"
-        if [ "${{ env.OP_NMS }}" = true ]; then SUM_HEAD="${SUM_HEAD} · NoMount ${NMVER:-?}"; fi
+        if [ "${{ env.OP_SUSFS }}" = true ]; then SUM_HEAD="${SUM_HEAD} · SUSFS ${SUSVER:-?}"; fi
+        if [ "${{ env.OP_KPM }}" = true ]; then SUM_HEAD="${SUM_HEAD} · KPM"; fi
         SUM_HEAD="${SUM_HEAD} · ⏱ ${{ steps.collect_stats.outputs.build_time }}s"
         if [ "${{ steps.collect_stats.outputs.warnings_count }}" != "0" ]; then
           SUM_HEAD="${SUM_HEAD} · ⚠️ ${{ steps.collect_stats.outputs.warnings_count }}"
@@ -2094,8 +2457,8 @@ runs:
             echo "| **SukiSU Commit** | unknown |"
           fi
           
-          if [ "${{ env.OP_NMS }}" = true ]; then
-            echo "| **NoMount Version** | ${NMVER:-unknown} |"
+          if [ "${{ env.OP_SUSFS }}" = true ]; then
+            echo "| **SUSFS Version** | ${SUSVER:-unknown} |"
           fi
           
           echo ""
@@ -2107,6 +2470,9 @@ runs:
           echo "| **BBR** | ${{ env.OP_BBR }} |"
           echo "| **BBRv3** | ${{ env.OP_BBR3 }} |"
           echo "| **BBG** | ${{ env.OP_BBG }} |"
+          echo "| **KPM** | ${{ env.OP_KPM }} |"
+          echo "| **SUSFS** | ${{ env.OP_SUSFS }} |"
+          echo "| **NoMount** | ${{ env.OP_NMS }} |"
           echo "| **HMBIRD SCX** | ${{ env.OP_HMBIRD }} |"
           echo "| **TTL** | ${{ env.OP_TTL }} |"
           echo "| **IP_SET & IPv6 NAT** | ${{ env.OP_IP_SET }} |"

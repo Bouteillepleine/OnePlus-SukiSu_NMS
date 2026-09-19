@@ -1,15 +1,15 @@
 <div align="center">
 
-# OnePlus 📦 SukiSU Ultra 📦 NoMount
+# OnePlus 📦 SukiSU Ultra Kernels
 
-### A custom OnePlus kernel + a **mountless** hiding add-on
+### Prebuilt AnyKernel3 kernels for OnePlus A14, A15 and A16
 
-*Automated AnyKernel3 builds for dozens of OnePlus models — with `SukiSU` root and **NoMount** hookless VFS redirection baked in.*
+*Automated builds with **SukiSU built in**, plus KPM and SUSFS enabled in the standard configurations.*
 
-[![Latest Release](https://img.shields.io/github/v/release/Bouteillepleine/OnePlus-SukiSu_NMS?style=for-the-badge&logo=github&label=Latest%20Release&color=6C4AB6)](https://github.com/Bouteillepleine/OnePlus-SukiSu_NMS/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/Bouteillepleine/OnePlus-SukiSu_NMS/total?style=for-the-badge&logo=icloud&logoColor=white&label=Downloads&color=2E8B57)](https://github.com/Bouteillepleine/OnePlus-SukiSu_NMS/releases)
-[![Build](https://img.shields.io/github/actions/workflow/status/Bouteillepleine/OnePlus-SukiSu_NMS/build-kernel-release.yml?style=for-the-badge&logo=githubactions&logoColor=white&label=Build)](https://github.com/Bouteillepleine/OnePlus-SukiSu_NMS/actions)
-[![Stars](https://img.shields.io/github/stars/Bouteillepleine/OnePlus-SukiSu_NMS?style=for-the-badge&logo=github&color=E3B341)](https://github.com/Bouteillepleine/OnePlus-SukiSu_NMS/stargazers)
+[![Latest Release](https://img.shields.io/github/v/release/cyzrqh/6666?style=for-the-badge&logo=github&label=Latest%20Release&color=6C4AB6)](https://github.com/cyzrqh/6666/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/cyzrqh/6666/total?style=for-the-badge&logo=icloud&logoColor=white&label=Downloads&color=2E8B57)](https://github.com/cyzrqh/6666/releases)
+[![Build](https://img.shields.io/github/actions/workflow/status/cyzrqh/6666/build-kernel-release.yml?style=for-the-badge&logo=githubactions&logoColor=white&label=Build)](https://github.com/cyzrqh/6666/actions)
+[![Stars](https://img.shields.io/github/stars/cyzrqh/6666?style=for-the-badge&logo=github&color=E3B341)](https://github.com/cyzrqh/6666/stargazers)
 
 **Based on [WildKernels/OnePlus_KernelSU_SUSFS](https://github.com/WildKernels/OnePlus_KernelSU_SUSFS)**
 
@@ -20,111 +20,67 @@
 
 ---
 
-## 🧩 It's a kernel **+** an add-on — two separate downloads
+## ✅ Standard build defaults
 
-Every release contains **two things**. Flash the kernel first, then add NoMount Suite on top of it.
+Features are selected when the kernel is built. Every checked-in A14, A15 and A16 configuration currently uses these defaults:
 
-|  | 1️⃣ The kernel — *built here* | 2️⃣ NoMount Suite — *the add-on* |
-|---|---|---|
-| **What it is** | AnyKernel3 ZIP (`AK3_<device>_…zip`) with `SukiSU` root and `CONFIG_NOMOUNT=y` compiled in | `00_NoMount-Module-vX.Y.Z.zip` — the metamodule that switches NoMount **on** |
-| **Where it comes from** | This repo's GitHub Actions — one ZIP per device | The separate **[NoMount Suite](https://github.com/Bouteillepleine/NoMount-Suite)** — attached to each release as an add-on (sorted to the top of the Assets list) |
-| **How you install it** | Flash with **Kernel Flasher** or **SukiSU Manager** | **SukiSU Manager → Modules → Install from storage** |
-| **Get it now** | [⬇️ Latest release](https://github.com/Bouteillepleine/OnePlus-SukiSu_NMS/releases/latest) | [⬇️ Latest release](https://github.com/Bouteillepleine/OnePlus-SukiSu_NMS/releases/latest) — it's at the top of the Assets list |
+| Component | Standard default | Notes |
+|---|---:|---|
+| **SukiSU Ultra** | **Built in** | Kernel-level root is part of the kernel image. |
+| **KPM** | **Enabled** | KPM support is compiled into the kernel. |
+| **SUSFS** | **Enabled** | SUSFS support is compiled into the kernel. |
+| **NoMount / NMS** | **Disabled** | The NoMount patch stack is not applied by the standard configurations. |
+| **BBG** | **Disabled** | BBG is not compiled in by the standard configurations. |
 
 > [!IMPORTANT]
-> **The kernel on its own does nothing visible.** NoMount is *compiled in* but stays **dormant** until the **NoMount Suite** module activates it. NoMount Suite is the part that carries your injection rules, the WebUI, and the spoofing — think of it like a Magisk/KSU module. **You need both.**
+> The AnyKernel3 (AK3) installer has **no volume-key feature selection**. It flashes the already-built kernel image and does not enable optional features during installation. In particular, NoMount/NMS and BBG remain disabled unless they were explicitly enabled at build time.
+
+Other feature flags can vary by device and kernel base. Check the matching JSON file under `configs/` for the exact build-time selection.
 
 ---
 
-## 🫥 Why NoMount?
+## 📱 Supported releases and configuration count
 
-Most hiding solutions **mount** something — an `overlayfs` or bind mount — to swap files in. Every mount is a line in `/proc/mounts` and an `st_dev` mismatch a detector can read.
+This repository supports OnePlus **A14, A15 and A16** targets. The current inventory contains **158 configurations**:
 
-**NoMount serves your modules with _zero_ mounts.** It's a hookless, per-inode VFS redirection living inside the kernel:
+| Target release | Configuration directory | Count |
+|---|---|---:|
+| **A14** | `configs/a14/` | **13** |
+| **A15** | `configs/a15/` | **74** |
+| **A16** | `configs/a16/` | **71** |
 
-- 🚫 **No overlay / bind mounts** — there's nothing in the mount table to find.
-- 🎯 **Per-app, per-file** — redirect only the files you choose, only for the UIDs you choose.
-- 🧼 **No mount-hiding cat-and-mouse** — you can't be caught hiding a mount that never existed.
-- 🖥️ **WebUI-driven** — injection rules, per-app hiding and health checks, all from your manager.
-
-<table>
-  <tr>
-    <td align="center"><a href="https://github.com/Bouteillepleine/OnePlus-SukiSu_NMS/blob/NoMount/docs/screenshots/status.jpg"><img src="https://raw.githubusercontent.com/Bouteillepleine/OnePlus-SukiSu_NMS/NoMount/docs/screenshots/status.jpg" width="155" alt="Status"></a></td>
-    <td align="center"><a href="https://github.com/Bouteillepleine/OnePlus-SukiSu_NMS/blob/NoMount/docs/screenshots/modules.jpg"><img src="https://raw.githubusercontent.com/Bouteillepleine/OnePlus-SukiSu_NMS/NoMount/docs/screenshots/modules.jpg" width="155" alt="Modules"></a></td>
-    <td align="center"><a href="https://github.com/Bouteillepleine/OnePlus-SukiSu_NMS/blob/NoMount/docs/screenshots/rules.jpg"><img src="https://raw.githubusercontent.com/Bouteillepleine/OnePlus-SukiSu_NMS/NoMount/docs/screenshots/rules.jpg" width="155" alt="Rules"></a></td>
-    <td align="center"><a href="https://github.com/Bouteillepleine/OnePlus-SukiSu_NMS/blob/NoMount/docs/screenshots/check.jpg"><img src="https://raw.githubusercontent.com/Bouteillepleine/OnePlus-SukiSu_NMS/NoMount/docs/screenshots/check.jpg" width="155" alt="Check"></a></td>
-    <td align="center"><a href="https://github.com/Bouteillepleine/OnePlus-SukiSu_NMS/blob/NoMount/docs/screenshots/duckdetector.jpg"><img src="https://raw.githubusercontent.com/Bouteillepleine/OnePlus-SukiSu_NMS/NoMount/docs/screenshots/duckdetector.jpg" width="155" alt="Duck Detector"></a></td>
-  </tr>
-  <tr>
-    <td align="center"><sub><b>Status</b><br>zero mounts, live counts</sub></td>
-    <td align="center"><sub><b>Modules</b><br>what is served, and how</sub></td>
-    <td align="center"><sub><b>Rules</b><br>per-module rule breakdown</sub></td>
-    <td align="center"><sub><b>Check</b><br>one diagnostic, plain verdicts</sub></td>
-    <td align="center"><sub><b>Duck Detector</b><br>0 danger, 0 warning</sub></td>
-  </tr>
-</table>
-
-<sub>Tap a screenshot for the full-size view.</sub>
-
----
-
-## ✨ Features
-
-- **SukiSU Ultra** — kernel-level root.
-- **NoMount** — hookless VFS redirection; modules are served with **no mount at all**.
-- **WireGuard** — modern VPN built into the kernel.
-- **BBR & ECN** — TCP / network optimizations.
-- **sched_ext** — extensible scheduler framework (supported kernels).
-
----
-
-## 📱 Supported devices
-
-One build fans out to **dozens** of OnePlus models across Android 13–16 and kernel 5.10–6.12.
-See the [**latest release**](https://github.com/Bouteillepleine/OnePlus-SukiSu_NMS/releases/latest) for the full, per-device list — or browse:
-
-```text
-configs/
-```
+The release target, device model, kernel version and source branch must all match your phone. See [compatibility.md](compatibility.md) and the [latest release](https://github.com/cyzrqh/6666/releases/latest) before flashing.
 
 ---
 
 ## 🚀 Installation
 
-**Prerequisites:** unlocked bootloader · a backed-up stock `boot.img` · **[Kernel Flasher](https://github.com/fatalcoder524/KernelFlasher/releases)** installed.
+**Prerequisites:** an unlocked bootloader, a backed-up stock `boot.img`, and [Kernel Flasher](https://github.com/fatalcoder524/KernelFlasher/releases) or another compatible kernel flashing tool.
 
-1. **Download** the [latest release](https://github.com/Bouteillepleine/OnePlus-SukiSu_NMS/releases/latest) — grab **both**:
-   - the **kernel** ZIP matching your exact device / OS / kernel base, and
-   - the **`00_NoMount-Module-vX.Y.Z.zip`** add-on (top of the Assets list).
-2. **Flash the kernel** ZIP with **Kernel Flasher** (or **SukiSU Manager**).
-3. **Install the SukiSU Manager APK** — use the version shown as `SukiSU Version` in the release notes.
-4. 🧩 **Add NoMount Suite:** SukiSU Manager → **Modules → Install from storage** → select `00_NoMount-Module-…zip`.
-   > Already have a metamodule? Remove it and reboot **first** — only one metamodule can be active at a time.
-5. **Reboot.**
-6. Open **SukiSU Manager → NoMount Suite → Open** — the WebUI should show **Active** with your rules.
+1. Open the [latest release](https://github.com/cyzrqh/6666/releases/latest).
+2. Download the `AK3_…zip` that matches your exact device, A14/A15/A16 release and kernel base.
+3. Flash the ZIP with Kernel Flasher or SukiSU Manager.
+4. Reboot, then use the compatible SukiSU Manager version shown in the release notes.
 
-> [!TIP]
-> **Safety net:** if the phone fails to boot **3 times** in a row, NoMount auto-disables itself so you can get back in and recover. Keep your stock `boot.img` handy either way.
+The standard kernel ZIP already contains SukiSU, KPM and SUSFS support. NoMount/NMS and BBG are not enabled by default, and the AK3 installer does not offer a volume-key menu to turn them on.
 
 ---
 
 ## 🔄 Updating &amp; removing
 
-- **Update** — re-flash the kernel ZIP **and** NoMount Suite together (keep them a matched set).
-- **After an OTA** — the system update restores the stock kernel; just re-flash the release.
-- **Remove** — delete NoMount Suite in SukiSU Manager and reboot, then flash a stock boot image (or take an OTA) to drop the custom kernel.
+- **Update** — flash a newer ZIP that still matches the same device, target release and kernel base.
+- **After a major OTA** — do not reuse the previous kernel ZIP; wait for and flash a matching A14, A15 or A16 build.
+- **Remove** — restore the stock boot image or take a compatible OTA that restores the stock kernel.
 
 ---
 
 ## ❓ FAQ
 
-**Do I really need the module?** Yes. The kernel ships NoMount **dormant**; NoMount Suite activates it. No Suite → no hiding.
+**Can I choose KPM, SUSFS, NoMount/NMS or BBG with the volume keys while flashing?** No. AK3 is non-interactive and contains no volume-key feature selector. KPM and SUSFS are already enabled in the standard image; NoMount/NMS and BBG are not.
 
-**Where does the module come from?** It's a **separate add-on**, maintained in the [NoMount Suite](https://github.com/Bouteillepleine/NoMount-Suite) and attached to each release as `00_NoMount-Module-vX.Y.Z.zip` (named to sort to the top of the Assets).
+**Can the installer enable a feature that was not built into the image?** No. Feature selection happens at build time. To change a build-time flag, use a custom configuration and build a new kernel ZIP.
 
-**Can I keep my current kernel and just flash the module?** No — NoMount must be compiled into the kernel (`CONFIG_NOMOUNT=y`). Use the kernel from this release.
-
-**Will it pass Play Integrity / my bank?** NoMount removes the *mount* signal. It **cannot** restore **hardware** key-attestation, which a custom kernel may break (STRONG / Wallet). Always test with your own apps.
+**Will a custom kernel preserve Play Integrity STRONG or banking compatibility?** Not necessarily. A custom kernel cannot restore hardware key-attestation, and app behavior varies. Keep a stock boot image available for recovery and testing.
 
 ---
 
@@ -136,11 +92,26 @@ Via GitHub Actions:
 Actions → Build and Release OnePlus Kernels → Run workflow
 ```
 
-Root option:
+SukiSU is the built-in root option:
 
 ```json
-[{"type":"SUKISU","hash":"main"}]
+[{"type":"SUKISU","hash":"b20dee702035af09cb2ecb5f35443bbc1747f3e6"}]
 ```
+
+This is the verified SukiSU `builtin` commit used with the pinned SUSFS revisions; an explicit ref can still be supplied for testing.
+
+The standard configuration flags are:
+
+```json
+{
+  "susfs": true,
+  "kpm": true,
+  "NMS": false,
+  "bbg": false
+}
+```
+
+These values are baked into the kernel image. The generated AK3 ZIP does not ask for volume-key choices and does not override them while flashing.
 
 > **First run:** enable **Force toolchain sync before build** (auto-on for releases) — required once to populate the toolchain cache.
 
@@ -149,9 +120,9 @@ Root option:
 ## 🔗 Links
 
 - [SukiSU Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra) · [SukiSU Manager releases](https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases)
-- [NoMount Suite](https://github.com/Bouteillepleine/NoMount-Suite) — the hiding add-on
+- [NoMount Suite](https://github.com/Bouteillepleine/NoMount-Suite) — optional integration; disabled in the standard configurations
 - [Kernel Flasher](https://github.com/fatalcoder524/KernelFlasher)
-- [Releases](https://github.com/Bouteillepleine/OnePlus-SukiSu_NMS/releases)
+- [Releases](https://github.com/cyzrqh/6666/releases)
 
 ---
 
@@ -164,7 +135,7 @@ Any and all donations are appreciated!
 
 ## 🤝 Acknowledgments
 
-- **[NoMount Suite](https://github.com/Bouteillepleine/NoMount-Suite)** &amp; all contributors — NoMount development 🙌 (built on **[maxsteeel/nomount](https://github.com/maxsteeel/nomount)**)
+- **[NoMount Suite](https://github.com/Bouteillepleine/NoMount-Suite)** &amp; all contributors — optional NoMount integration (built on **[maxsteeel/nomount](https://github.com/maxsteeel/nomount)**)
 - **SukiSU Ultra** — the root solution
 - **AnyKernel3** by osm0sis and contributors
 - **[WildKernels/OnePlus_KernelSU_SUSFS](https://github.com/WildKernels/OnePlus_KernelSU_SUSFS)** — the excellent OnePlus build framework this is forked from
@@ -178,4 +149,4 @@ Any and all donations are appreciated!
 
 Kernel source comes from **OnePlusOSS** (GPL-2.0); the build framework is forked from
 **[WildKernels/OnePlus_KernelSU_SUSFS](https://github.com/WildKernels/OnePlus_KernelSU_SUSFS)**.
-The **NoMount Suite** add-on is a separate project — see [NoMount Suite](https://github.com/Bouteillepleine/NoMount-Suite) for its own license.
+The optional **NoMount Suite** integration is a separate project and is disabled by default. See [NoMount Suite](https://github.com/Bouteillepleine/NoMount-Suite) for its own license.

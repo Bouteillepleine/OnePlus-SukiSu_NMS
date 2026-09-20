@@ -16,6 +16,9 @@ concurrency:
   cancel-in-progress: ${{ github.event.inputs.make_release != 'true' }}
 
 on:
+  push:
+    branches:
+      - codex-compat-smoke
   workflow_dispatch:
     inputs:
       make_release:
@@ -111,6 +114,11 @@ jobs:
           input="${{ github.event.inputs.op_model }}"
           target_model="${{ github.event.inputs.op_target_model }}"
           ksu_options_raw='${{ github.event.inputs.ksu_options }}'
+          if [ "${{ github.event_name }}" = push ]; then
+            input="A14+15+16"
+            target_model=""
+            ksu_options_raw='[{"type":"SUKISU","hash":"b20dee702035af09cb2ecb5f35443bbc1747f3e6"}]'
+          fi
           if ! ksu_options_normalized=$(echo "$ksu_options_raw" | jq -c 'map(if .type then .type |= ascii_upcase | if .hash == null or .hash == "" then .hash = "b20dee702035af09cb2ecb5f35443bbc1747f3e6" else . end else error("No type found") end)' 2>&1); then
             echo "::error::ksu_options validation failed: $ksu_options_normalized"
             exit 1
@@ -171,7 +179,13 @@ jobs:
           
           filtered=$(jq -c "$jq_filter" matrix.json)
 
-          if [ -n "$target_model" ]; then
+          if [ "${{ github.event_name }}" = push ]; then
+            smoke_targets='["OP-ACE-RACE-5.10.209","OP-NORD-CE-5","OP15"]'
+            echo "🧪 Compatibility smoke targets: $smoke_targets"
+            filtered=$(echo "$filtered" | jq -c --argjson targets "$smoke_targets" '
+              map(select(.model as $model | $targets | index($model)))
+            ')
+          elif [ -n "$target_model" ]; then
             echo "🎯 Target model filter enabled: $target_model"
             echo "   Matching exact model OR versioned model prefix."
             filtered=$(echo "$filtered" | jq -c --arg target "$target_model" '
@@ -541,12 +555,12 @@ jobs:
           op_config_json: ${{ steps.prepare_config.outputs.config_json }}
           ksu_type: ${{ matrix.ksu_type }}
           ksu_branch_or_hash: ${{ matrix.ksu_resolved_hash }}
-          optimize_level: ${{ inputs.optimize_level }}
-          build_timestamp: ${{ inputs.build_timestamp }}
-          enable_adios: ${{ inputs.enable_adios }}
-          patches_ref: ${{ inputs.patches_ref }}
-          clean: ${{ inputs.clean_build }}
-          debug: ${{ inputs.debug }}
+          optimize_level: ${{ inputs.optimize_level || 'O2' }}
+          build_timestamp: ${{ inputs.build_timestamp || '' }}
+          enable_adios: ${{ inputs.enable_adios || false }}
+          patches_ref: ${{ inputs.patches_ref || 'main' }}
+          clean: ${{ inputs.clean_build || false }}
+          debug: ${{ inputs.debug || false }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 📊 Build statistics

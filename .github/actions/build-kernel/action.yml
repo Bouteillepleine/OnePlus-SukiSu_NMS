@@ -907,6 +907,7 @@ runs:
       if: ${{ inputs.ksu_type == 'SUKISU' }}
       run: |
         set -euo pipefail
+        trap 'rc=$?; printf "::error title=SukiSU setup failed::line %s: %s (exit %s)\n" "$LINENO" "$BASH_COMMAND" "$rc"; exit "$rc"' ERR
         echo "::group::Add SukiSU"
 
         cd "$KERNEL_PLATFORM_FOLDER"
@@ -1051,6 +1052,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        trap 'rc=$?; printf "::error title=SUSFS setup failed::line %s: %s (exit %s)\n" "$LINENO" "$BASH_COMMAND" "$rc"; exit "$rc"' ERR
         echo "::group::Apply SUSFS patches"
 
         if ! grep -RqsE '^[[:space:]]*(menu)?config[[:space:]]+KSU_SUSFS\b' "$KSU_FOLDER"; then
@@ -1159,7 +1161,15 @@ runs:
             ;;
         esac
 
-        patch -p1 --forward --fuzz=3 < "$SUSFS_FOLDER/kernel_patches/50_add_susfs_in_${SUSFS_KERNEL_BRANCH}.patch"
+        if ! patch -p1 --forward --fuzz=3 \
+          < "$SUSFS_FOLDER/kernel_patches/50_add_susfs_in_${SUSFS_KERNEL_BRANCH}.patch" \
+          2>&1 | tee /tmp/susfs_patch.log; then
+          while IFS= read -r line; do
+            line="${line//'%'/'%25'}"
+            echo "::error title=SUSFS patch failed::$line"
+          done < <(tail -n 30 /tmp/susfs_patch.log)
+          exit 1
+        fi
 
         if find . -type f -name '*.rej' -print -quit | grep -q .; then
           echo "::error::SUSFS patch left reject files"
@@ -1886,6 +1896,7 @@ runs:
         CCACHE_EXTRAFILES: "$COMMON_KERNEL_FOLDER/out/kernel/config_data.gz"
       run: |
         set -euo pipefail
+        trap 'rc=$?; printf "::error title=Kernel build step failed::line %s: %s (exit %s)\n" "$LINENO" "$BASH_COMMAND" "$rc"; exit "$rc"' ERR
         echo "::group::Build kernel with ccache optimization"
         
         cd "$COMMON_KERNEL_FOLDER"
@@ -2073,9 +2084,29 @@ runs:
         BUILD_START=$(date +%s)
         set -o pipefail
         
+        report_build_errors() {
+          local log_file="$1"
+          local found=false
+          while IFS= read -r line; do
+            found=true
+            line="${line//'%'/'%25'}"
+            echo "::error title=Kernel compiler::$line"
+          done < <(grep -iE '(^|[[:space:]])(fatal )?error:|undefined reference|No rule to make target|ld\.lld: error|clang: error' "$log_file" | tail -n 20 || true)
+          if [ "$found" = false ]; then
+            echo "::error title=Kernel compiler::Build command failed without a recognized compiler diagnostic; inspect the preceding log tail."
+          fi
+          tail -n 100 "$log_file" || true
+        }
+
         if [ "${{ inputs.debug }}" == "true" ]; then
-          make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" -j"$(nproc --all)" O="$OUT" KCFLAGS="$KCFLAGS" KCPPFLAGS="$KCPPFLAGS" Image modules 2>&1 | tee build.log
-          make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" -j"$(nproc --all)" O="$COMMON_KERNEL_FOLDER/out" KCFLAGS="$KCFLAGS" KCPPFLAGS="$KCPPFLAGS" INSTALL_MOD_PATH="$COMMON_KERNEL_FOLDER/out/install" modules_install 2>&1 | tee install.log
+          if ! make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" -j"$(nproc --all)" O="$OUT" KCFLAGS="$KCFLAGS" KCPPFLAGS="$KCPPFLAGS" Image modules 2>&1 | tee build.log; then
+            report_build_errors build.log
+            exit 1
+          fi
+          if ! make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" -j"$(nproc --all)" O="$COMMON_KERNEL_FOLDER/out" KCFLAGS="$KCFLAGS" KCPPFLAGS="$KCPPFLAGS" INSTALL_MOD_PATH="$COMMON_KERNEL_FOLDER/out/install" modules_install 2>&1 | tee install.log; then
+            report_build_errors install.log
+            exit 1
+          fi
           
           cp build.log "$DEBUG_ARTIFACTS_FOLDER/build.log"
           cp install.log "$DEBUG_ARTIFACTS_FOLDER/install.log"
@@ -2086,7 +2117,10 @@ runs:
           
           ls -la "$DEBUG_ARTIFACTS_FOLDER"
         else
-          make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" -j"$(nproc --all)" O="$OUT" KCFLAGS="$KCFLAGS" KCPPFLAGS="$KCPPFLAGS" Image 2>&1 | tee build.log
+          if ! make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" -j"$(nproc --all)" O="$OUT" KCFLAGS="$KCFLAGS" KCPPFLAGS="$KCPPFLAGS" Image 2>&1 | tee build.log; then
+            report_build_errors build.log
+            exit 1
+          fi
         fi
         
         BUILD_END=$(date +%s)

@@ -108,6 +108,8 @@ runs:
         ACTION_REF_VAL: ${{ github.action_ref }}
       run: |
         set -euo pipefail
+        echo "get-action-info" > "$GITHUB_WORKSPACE/.build-phase"
+        : > "$GITHUB_WORKSPACE/.build-diagnostics"
         echo "ACTION_REPO=$ACTION_REPO_VAL" >> $GITHUB_ENV
         echo "ACTION_REF=$ACTION_REF_VAL" >> $GITHUB_ENV
 
@@ -123,6 +125,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        echo "parse-device-config" > "$GITHUB_WORKSPACE/.build-phase"
         echo '${{ inputs.op_config_json }}' > /tmp/config.json
         jq -r 'to_entries[] | "OP_\(.key | ascii_upcase)=\(.value)"' /tmp/config.json >> "$GITHUB_ENV"
         echo "Parsed config:"
@@ -144,6 +147,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        echo "validate-inputs" > "$GITHUB_WORKSPACE/.build-phase"
         echo "::group::Validate inputs"
         model="$OP_MODEL"
         soc="$OP_SOC"
@@ -357,6 +361,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        echo "setup-base-environment" > "$GITHUB_WORKSPACE/.build-phase"
         CONFIG="$OP_MODEL"
         echo "Creating folder for configuration: $CONFIG"
         mkdir -p "$CONFIG"
@@ -376,6 +381,10 @@ runs:
         git config --global core.fsmonitor true
         git config --global pack.sparse true
 
+    - name: Mark kernel source sync phase
+      shell: bash
+      run: echo "sync-kernel-source" > "$GITHUB_WORKSPACE/.build-phase"
+
     - name: Sync Kernel Source
       id: sync-kernel-source
       uses: ./action-source/.github/actions/kernel-source-sync
@@ -388,6 +397,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        echo "set-directory-paths" > "$GITHUB_WORKSPACE/.build-phase"
         CONFIG_DIR="$GITHUB_WORKSPACE/$CONFIG"
         ARTIFACTS_DIR="$CONFIG_DIR/artifacts"
         KERNEL_PLATFORM_DIR="$CONFIG_DIR/kernel_platform"
@@ -426,6 +436,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        echo "detect-kernel-version" > "$GITHUB_WORKSPACE/.build-phase"
         echo "::group::Get kernel version"
         cd "$COMMON_KERNEL_FOLDER"
         
@@ -493,6 +504,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        echo "detect-clang" > "$GITHUB_WORKSPACE/.build-phase"
         echo "::group::Detect Clang"
         CLANG_FOUND=false
         CLANG_BIN=""
@@ -745,6 +757,7 @@ runs:
       run: |
         echo "::group::Fetch dependencies"
         set -euo pipefail
+        echo "fetch-build-dependencies" > "$GITHUB_WORKSPACE/.build-phase"
         echo "Fetching build dependencies..."
         
         
@@ -907,7 +920,8 @@ runs:
       if: ${{ inputs.ksu_type == 'SUKISU' }}
       run: |
         set -euo pipefail
-        trap 'rc=$?; printf "::error title=SukiSU setup failed::line %s: %s (exit %s)\n" "$LINENO" "$BASH_COMMAND" "$rc"; exit "$rc"' ERR
+        echo "setup-sukisu" > "$GITHUB_WORKSPACE/.build-phase"
+        trap 'rc=$?; cmd=$BASH_COMMAND; line=$LINENO; printf "SukiSU setup failed at line %s: %s (exit %s)\n" "$line" "$cmd" "$rc" >> "$GITHUB_WORKSPACE/.build-diagnostics"; printf "::error title=SukiSU setup failed::line %s: %s (exit %s)\n" "$line" "$cmd" "$rc"; exit "$rc"' ERR
         echo "::group::Add SukiSU"
 
         cd "$KERNEL_PLATFORM_FOLDER"
@@ -1052,7 +1066,8 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        trap 'rc=$?; printf "::error title=SUSFS setup failed::line %s: %s (exit %s)\n" "$LINENO" "$BASH_COMMAND" "$rc"; exit "$rc"' ERR
+        echo "apply-susfs" > "$GITHUB_WORKSPACE/.build-phase"
+        trap 'rc=$?; cmd=$BASH_COMMAND; line=$LINENO; printf "SUSFS setup failed at line %s: %s (exit %s)\n" "$line" "$cmd" "$rc" >> "$GITHUB_WORKSPACE/.build-diagnostics"; printf "::error title=SUSFS setup failed::line %s: %s (exit %s)\n" "$line" "$cmd" "$rc"; exit "$rc"' ERR
         echo "::group::Apply SUSFS patches"
 
         if ! grep -RqsE '^[[:space:]]*(menu)?config[[:space:]]+KSU_SUSFS\b' "$KSU_FOLDER"; then
@@ -1165,6 +1180,7 @@ runs:
           < "$SUSFS_FOLDER/kernel_patches/50_add_susfs_in_${SUSFS_KERNEL_BRANCH}.patch" \
           2>&1 | tee /tmp/susfs_patch.log; then
           while IFS= read -r line; do
+            printf 'SUSFS patch failed: %s\n' "$line" >> "$GITHUB_WORKSPACE/.build-diagnostics"
             line="${line//'%'/'%25'}"
             echo "::error title=SUSFS patch failed::$line"
           done < <(tail -n 30 /tmp/susfs_patch.log)
@@ -1896,7 +1912,8 @@ runs:
         CCACHE_EXTRAFILES: "$COMMON_KERNEL_FOLDER/out/kernel/config_data.gz"
       run: |
         set -euo pipefail
-        trap 'rc=$?; printf "::error title=Kernel build step failed::line %s: %s (exit %s)\n" "$LINENO" "$BASH_COMMAND" "$rc"; exit "$rc"' ERR
+        echo "compile-kernel" > "$GITHUB_WORKSPACE/.build-phase"
+        trap 'rc=$?; cmd=$BASH_COMMAND; line=$LINENO; printf "Kernel build step failed at line %s: %s (exit %s)\n" "$line" "$cmd" "$rc" >> "$GITHUB_WORKSPACE/.build-diagnostics"; printf "::error title=Kernel build step failed::line %s: %s (exit %s)\n" "$line" "$cmd" "$rc"; exit "$rc"' ERR
         echo "::group::Build kernel with ccache optimization"
         
         cd "$COMMON_KERNEL_FOLDER"
@@ -2089,11 +2106,14 @@ runs:
           local found=false
           while IFS= read -r line; do
             found=true
+            printf 'Kernel compiler: %s\n' "$line" >> "$GITHUB_WORKSPACE/.build-diagnostics"
             line="${line//'%'/'%25'}"
             echo "::error title=Kernel compiler::$line"
           done < <(grep -iE '(^|[[:space:]])(fatal )?error:|undefined reference|No rule to make target|ld\.lld: error|clang: error' "$log_file" | tail -n 20 || true)
           if [ "$found" = false ]; then
             echo "::error title=Kernel compiler::Build command failed without a recognized compiler diagnostic; inspect the preceding log tail."
+            echo "Kernel compiler: no recognized diagnostic; final log lines follow" >> "$GITHUB_WORKSPACE/.build-diagnostics"
+            tail -n 19 "$log_file" >> "$GITHUB_WORKSPACE/.build-diagnostics" || true
           fi
           tail -n 100 "$log_file" || true
         }

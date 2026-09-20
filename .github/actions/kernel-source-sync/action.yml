@@ -58,6 +58,11 @@ runs:
             "AnyKernel3": "AnyKernel3"
         }
         DEBUG = os.environ.get("DEBUG", "false").lower() == "true"
+        DIAGNOSTIC_FILE = os.path.join(os.environ.get("GITHUB_WORKSPACE", os.getcwd()), ".build-diagnostics")
+
+        def record_diagnostic(message):
+            with open(DIAGNOSTIC_FILE, "a", encoding="utf-8") as diagnostic:
+                diagnostic.write(message.replace("\n", " ") + "\n")
 
         # Bounded direct-download fallback for toolchains. On a toolchain cache-miss,
         # a SMALL build (few devices) may fetch the toolchain tarball straight from
@@ -240,14 +245,17 @@ runs:
                     print(f"Synced {name} successfully! ({duration:.2f}s)")
                     return True
                 except subprocess.CalledProcessError as e:
+                    detail = f"source sync {name}@{rev} attempt {attempt}/{MAX_ATTEMPTS} failed with exit {e.returncode}: {e.cmd}"
                     print(f"  [RETRY {attempt}/{MAX_ATTEMPTS}] {name} failed with exit code {e.returncode}. Command: {e.cmd}")
                     print(f"  [ERROR] Command failed for {name}: {e.cmd}")
                     print(f"   Stderr: {e.stderr.decode() if e.stderr else 'No stderr'}")
+                    record_diagnostic(detail)
                     if attempt < MAX_ATTEMPTS:
                         time.sleep(5)
                 except Exception as e:
                     print(f"  [RETRY {attempt}/{MAX_ATTEMPTS}] {name} failed: {e}")
                     print(f"  [ERROR] Failed to sync {name}")
+                    record_diagnostic(f"source sync {name}@{rev} attempt {attempt}/{MAX_ATTEMPTS} failed: {e}")
                     if attempt < MAX_ATTEMPTS:
                         time.sleep(5)
                 finally:

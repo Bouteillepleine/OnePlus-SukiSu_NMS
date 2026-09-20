@@ -599,6 +599,14 @@ jobs:
             fi
           else
             echo "❌ Build failed"
+            phase="$(cat "$GITHUB_WORKSPACE/.build-phase" 2>/dev/null || echo unknown)"
+            echo "::error title=Kernel build failed in phase::$phase"
+            if [ -s "$GITHUB_WORKSPACE/.build-diagnostics" ]; then
+              while IFS= read -r line; do
+                line="${line//'%'/'%25'}"
+                echo "::error title=Kernel build diagnostic::$line"
+              done < <(tail -n 20 "$GITHUB_WORKSPACE/.build-diagnostics")
+            fi
           fi
           
           echo "::endgroup::"

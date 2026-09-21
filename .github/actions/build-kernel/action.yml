@@ -995,6 +995,18 @@ runs:
           echo "Injected NoMount compatibility declarations into SukiSU"
         fi
 
+        if [ "$ANDROID_VER" = "android16" ] && [ "$KERNEL_VER" = "6.12" ]; then
+          SUKISU_612_PATCH="$GITHUB_ACTION_PATH/patches/sukisu-6.12-compat.patch"
+          if [ ! -s "$SUKISU_612_PATCH" ]; then
+            echo "::error::Missing SukiSU 6.12 compatibility patch"
+            exit 1
+          fi
+          patch -d "$KERNEL_PLATFORM_FOLDER/KernelSU" -p1 --forward < "$SUKISU_612_PATCH"
+          grep -qF '#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 12, 0)' "$KSU_KDIR/kpm/super_access.c"
+          grep -qF 'security_add_hooks(ksu_hooks, ARRAY_SIZE(ksu_hooks), &ksu_lsmid);' "$KSU_KDIR/hook/lsm_hook.c"
+          echo "Applied SukiSU Linux 6.12 netlink and LSM compatibility"
+        fi
+
         cd "$KERNEL_PLATFORM_FOLDER/KernelSU"
 
         KSU_COMMIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
@@ -1002,22 +1014,27 @@ runs:
           echo "::error::SukiSU checkout mismatch: expected $KSU_INPUT, got $KSU_COMMIT_SHA"
           exit 1
         fi
-        COMMITS_COUNT="$(git rev-list --count HEAD 2>/dev/null || true)"
+        # SukiSU's own Makefile versions every flavour from the main history,
+        # including the SUSFS-ready builtin branch.  Counting detached HEAD
+        # here made builtin look like 37987 while upstream correctly reports
+        # 40922 for the same checkout.
+        VERSION_REF="main"
+        if ! git rev-parse --verify --quiet "$VERSION_REF" >/dev/null; then
+          VERSION_REF="origin/main"
+        fi
+        COMMITS_COUNT="$(git rev-list --count "$VERSION_REF" 2>/dev/null || true)"
         if [[ ! "$COMMITS_COUNT" =~ ^[0-9]+$ ]]; then
-          echo "::warning::Could not determine commit count, using fallback 30000."
-          COMMITS_COUNT=30000
+          echo "::error::Could not determine SukiSU main-history commit count."
+          exit 1
         fi
 
-        BASE_VERSION=37185
-        KSU_VERSION=$((COMMITS_COUNT + BASE_VERSION))
+        VERSION_BASE=40000
+        VERSION_OFFSET=2815
+        KSU_VERSION=$((VERSION_BASE + COMMITS_COUNT - VERSION_OFFSET))
 
-        echo "SukiSU commits: $COMMITS_COUNT"
+        echo "SukiSU version history ($VERSION_REF): $COMMITS_COUNT commits"
         echo "SukiSU version: $KSU_VERSION"
         echo "SukiSU commit:  $KSU_COMMIT_SHA"
-
-        if [ -f "$KERNEL_PLATFORM_FOLDER/KernelSU/kernel/Makefile" ]; then
-          sed -i "s/DKSU_VERSION=[0-9]*/DKSU_VERSION=${KSU_VERSION}/" "$KERNEL_PLATFORM_FOLDER/KernelSU/kernel/Makefile" || true
-        fi
 
         if [ -f "$KERNEL_PLATFORM_FOLDER/KernelSU/kernel/Kbuild" ]; then
           sed -i 's#^KSU_VERSION_FULL :=.*#KSU_VERSION_FULL := v$(VERSION_TAG)-⚡Ultra⚡@SukiSU#' "$KERNEL_PLATFORM_FOLDER/KernelSU/kernel/Kbuild" || true
@@ -1068,20 +1085,27 @@ runs:
         set -euo pipefail
         echo "apply-susfs" > "$GITHUB_WORKSPACE/.build-phase"
         trap 'rc=$?; cmd=$BASH_COMMAND; line=$LINENO; printf "SUSFS setup failed at line %s: %s (exit %s)\n" "$line" "$cmd" "$rc" >> "$GITHUB_WORKSPACE/.build-diagnostics"; printf "::error title=SUSFS setup failed::line %s: %s (exit %s)\n" "$line" "$cmd" "$rc"; exit "$rc"' ERR
+        susfs_fail() {
+          local message="$*"
+          printf 'SUSFS setup: %s\n' "$message" >> "$GITHUB_WORKSPACE/.build-diagnostics"
+          echo "::error::$message"
+          exit 1
+        }
         echo "::group::Apply SUSFS patches"
 
+        echo "apply-susfs:validate-builtin" > "$GITHUB_WORKSPACE/.build-phase"
         if ! grep -RqsE '^[[:space:]]*(menu)?config[[:space:]]+KSU_SUSFS\b' "$KSU_FOLDER"; then
-          echo "::error::The selected SukiSU source does not include built-in SUSFS support. Use the SukiSU builtin branch."
-          exit 1
+          susfs_fail "The selected SukiSU source does not include built-in SUSFS support"
         fi
 
+        echo "apply-susfs:copy-files" > "$GITHUB_WORKSPACE/.build-phase"
         cp "$SUSFS_FOLDER/kernel_patches/fs/"* "$COMMON_KERNEL_FOLDER/fs/"
         cp "$SUSFS_FOLDER/kernel_patches/include/linux/"* "$COMMON_KERNEL_FOLDER/include/linux/"
 
+        echo "apply-susfs:detect-version" > "$GITHUB_WORKSPACE/.build-phase"
         susfs_version="$(grep '#define SUSFS_VERSION' "$COMMON_KERNEL_FOLDER/include/linux/susfs.h" | awk -F'"' '{print $2}' | head -n1)"
         if [ -z "$susfs_version" ]; then
-          echo "::error::Could not determine SUSFS_VERSION"
-          exit 1
+          susfs_fail "Could not determine SUSFS_VERSION"
         fi
         echo "SUSVER=$susfs_version" >> "$GITHUB_ENV"
         echo "$susfs_version" >> "${ARTIFACTS_FOLDER}/${OP_MODEL}_${OP_OS_VERSION}.txt"
@@ -1089,10 +1113,10 @@ runs:
 
         cd "$COMMON_KERNEL_FOLDER"
 
+        echo "apply-susfs:prepare-source" > "$GITHUB_WORKSPACE/.build-phase"
         sublevel="${KERNEL_SUBLEVEL:-${TKERNEL_VER##*.}}"
         if ! [[ "$sublevel" =~ ^[0-9]+$ ]]; then
-          echo "::error::Invalid kernel sublevel: $sublevel"
-          exit 1
+          susfs_fail "Invalid kernel sublevel: $sublevel"
         fi
         version_key="${ANDROID_VER}-${KERNEL_VER}"
         echo "Applying SUSFS compatibility preparation for ${version_key}.${sublevel}"
@@ -1102,8 +1126,7 @@ runs:
           if grep -qF 'vm_flags_clear(new_vma, VM_PAD_MASK);' mm/mmap.c; then
             sed -i 's/\s*vm_flags_clear(new_vma, VM_PAD_MASK);/                new_vma->vm_flags \&= ~VM_PAD_MASK;/' mm/mmap.c
             if grep -qF 'vm_flags_clear(new_vma, VM_PAD_MASK);' mm/mmap.c; then
-              echo "::error::Failed to apply the VM_PAD_MASK compatibility fix"
-              exit 1
+              susfs_fail "Failed to apply the VM_PAD_MASK compatibility fix"
             fi
           fi
         fi
@@ -1140,8 +1163,16 @@ runs:
               grep -qxF '#include <linux/dma-buf.h>' fs/proc/base.c || sed -i '/^#include <linux\/cpufreq_times.h>$/a #include <linux/dma-buf.h>' fs/proc/base.c
             fi
             if [ "$sublevel" -ge 157 ]; then
-              sed -i '/^#include <trace\/hooks\/blk.h>$/d' fs/namespace.c
-              sed -i '/^#include <trace\/hooks\/fs.h>$/,+1 d' fs/super.c
+              restore_trace_blk=false
+              restore_trace_fs=false
+              if grep -qxF '#include <trace/hooks/blk.h>' fs/namespace.c; then
+                restore_trace_blk=true
+                sed -i '/^#include <trace\/hooks\/blk.h>$/d' fs/namespace.c
+              fi
+              if grep -qxF '#include <trace/hooks/fs.h>' fs/super.c; then
+                restore_trace_fs=true
+                sed -i '/^#include <trace\/hooks\/fs.h>$/d' fs/super.c
+              fi
             fi
             ;;
           android15-6.6)
@@ -1171,11 +1202,11 @@ runs:
             fi
             ;;
           *)
-            echo "::error::No SUSFS compatibility profile for $version_key"
-            exit 1
+            susfs_fail "No SUSFS compatibility profile for $version_key"
             ;;
         esac
 
+        echo "apply-susfs:patch-source" > "$GITHUB_WORKSPACE/.build-phase"
         if ! patch -p1 --forward --fuzz=3 \
           < "$SUSFS_FOLDER/kernel_patches/50_add_susfs_in_${SUSFS_KERNEL_BRANCH}.patch" \
           2>&1 | tee /tmp/susfs_patch.log; then
@@ -1187,18 +1218,20 @@ runs:
           exit 1
         fi
 
+        echo "apply-susfs:check-rejects" > "$GITHUB_WORKSPACE/.build-phase"
         if find . -type f -name '*.rej' -print -quit | grep -q .; then
-          echo "::error::SUSFS patch left reject files"
-          find . -type f -name '*.rej' -print
-          exit 1
+          while IFS= read -r reject; do
+            printf 'SUSFS reject file: %s\n' "$reject" >> "$GITHUB_WORKSPACE/.build-diagnostics"
+          done < <(find . -type f -name '*.rej' -print)
+          susfs_fail "SUSFS patch left reject files"
         fi
 
+        echo "apply-susfs:postprocess-source" > "$GITHUB_WORKSPACE/.build-phase"
         if grep -q 'VMA_PAD_START(' fs/proc/task_mmu.c && \
            ! grep -qE '#include <linux/pgsize_migration(_inline)?\.h>|define VMA_PAD_START' fs/proc/task_mmu.c; then
           sed -i '1a #ifndef VMA_PAD_START\n#define VMA_PAD_START(vma) ((vma)->vm_end)\n#endif' fs/proc/task_mmu.c
           if ! grep -q '^#define VMA_PAD_START(vma) ((vma)->vm_end)$' fs/proc/task_mmu.c; then
-            echo "::error::Failed to add VMA_PAD_START fallback"
-            exit 1
+            susfs_fail "Failed to add VMA_PAD_START fallback"
           fi
         fi
 
@@ -1227,8 +1260,12 @@ runs:
             [ "$sublevel" -le 25 ] && sed -i '/^#include <trace\/hooks\/sched.h>$/d' fs/proc/base.c
             [ "$sublevel" -le 141 ] && sed -i '/^#include <linux\/dma-buf.h>$/d' fs/proc/base.c
             if [ "$sublevel" -ge 157 ]; then
-              grep -qxF '#include <trace/hooks/blk.h>' fs/namespace.c || sed -i '/^#include "internal.h"$/a #include <trace/hooks/blk.h>' fs/namespace.c
-              grep -qxF '#include <trace/hooks/fs.h>' fs/super.c || sed -i '/^#include "internal.h"$/a #include <trace/hooks/fs.h>' fs/super.c
+              if [ "$restore_trace_blk" = true ]; then
+                grep -qxF '#include <trace/hooks/blk.h>' fs/namespace.c || sed -i '/^#include "internal.h"$/a #include <trace/hooks/blk.h>' fs/namespace.c
+              fi
+              if [ "$restore_trace_fs" = true ]; then
+                grep -qxF '#include <trace/hooks/fs.h>' fs/super.c || sed -i '/^#include "internal.h"$/a #include <trace/hooks/fs.h>' fs/super.c
+              fi
             fi
             [ "$sublevel" -le 75 ] && sed -i 's/goto show_pad;/return 0;/' fs/proc/task_mmu.c
             ;;
@@ -1255,6 +1292,7 @@ runs:
           done < <(find "$KERNEL_PLATFORM_FOLDER" -type f -name selinux_hide.c -print)
         fi
 
+        echo "apply-susfs:write-config" > "$GITHUB_WORKSPACE/.build-phase"
         DEFCONFIG="$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig"
         sed -i '/^CONFIG_KSU_SUSFS/d; /^# CONFIG_KSU_SUSFS/d' "$DEFCONFIG" || true
         cat >> "$DEFCONFIG" <<'EOF'
@@ -1321,6 +1359,8 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        echo "apply-other-patches" > "$GITHUB_WORKSPACE/.build-phase"
+        trap 'rc=$?; cmd=$BASH_COMMAND; line=$LINENO; printf "Other patches failed at line %s: %s (exit %s)\n" "$line" "$cmd" "$rc" >> "$GITHUB_WORKSPACE/.build-diagnostics"; exit "$rc"' ERR
         echo "::group::Apply Other patches"
         cd "$COMMON_KERNEL_FOLDER"
         KERNEL_VERSION="${{ env.KERNEL_VER }}"
@@ -1370,6 +1410,8 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        echo "apply-optimisation-patches" > "$GITHUB_WORKSPACE/.build-phase"
+        trap 'rc=$?; cmd=$BASH_COMMAND; line=$LINENO; printf "Optimisation patches failed at line %s: %s (exit %s)\n" "$line" "$cmd" "$rc" >> "$GITHUB_WORKSPACE/.build-diagnostics"; exit "$rc"' ERR
         echo "::group::Apply Optimisation patches"
         cd "$COMMON_KERNEL_FOLDER"
         KERNEL_VERSION="${{ env.KERNEL_VER }}"
@@ -1434,6 +1476,8 @@ runs:
       if: ${{ env.OP_NTSYNC == 'true' }}
       run: |
         set -euo pipefail
+        echo "apply-ntsync" > "$GITHUB_WORKSPACE/.build-phase"
+        trap 'rc=$?; cmd=$BASH_COMMAND; line=$LINENO; printf "NTSync patch failed at line %s: %s (exit %s)\n" "$line" "$cmd" "$rc" >> "$GITHUB_WORKSPACE/.build-diagnostics"; exit "$rc"' ERR
         echo "::group::Apply NTSync patch"
         cd "$COMMON_KERNEL_FOLDER"
         NTSYNC_FOLDER="$KERNEL_PATCHES_FOLDER/common/ntsync"
@@ -1441,6 +1485,12 @@ runs:
         BRANCH_SUFFIX=$(basename "$OP_BRANCH")
         
         NTSYNC_PATCH=""
+        if [ "$GKI_KEY" = "android12-5.10" ] && [ "$BRANCH_SUFFIX" = "mt6895" ]; then
+          # The A15 mt6895 trees retain the same lockdep layout as their A14
+          # base.  The generic 5.10 patch expects a helper absent from these
+          # sources and leaves include/linux/lockdep.h rejected.
+          NTSYNC_PATCH="$NTSYNC_FOLDER/ntsync_compat_${GKI_KEY}_A14.patch"
+        fi
         if [ -n "$NTSYNC_PATCH" ]; then
           if [ ! -f "$NTSYNC_PATCH" ]; then
             echo "::error::NTSync compat patch not found for ${OP_MODEL}: $(basename $NTSYNC_PATCH)"
@@ -1477,6 +1527,8 @@ runs:
       if: ${{ env.OP_UNICODE == 'true' }}
       run: |
         set -euo pipefail
+        echo "apply-unicode-fix" > "$GITHUB_WORKSPACE/.build-phase"
+        trap 'rc=$?; cmd=$BASH_COMMAND; line=$LINENO; printf "Unicode patch failed at line %s: %s (exit %s)\n" "$line" "$cmd" "$rc" >> "$GITHUB_WORKSPACE/.build-diagnostics"; exit "$rc"' ERR
         echo "::group::Apply Unicode Fix patch"
         cd "$COMMON_KERNEL_FOLDER"
         KERNEL_VERSION="${{ env.KERNEL_VER }}"
@@ -1493,6 +1545,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        echo "configure-tmpfs" > "$GITHUB_WORKSPACE/.build-phase"
         echo "Add Tmpfs Support"
         cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
         CONFIG_TMPFS_XATTR=y
@@ -1504,6 +1557,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        echo "configure-bbr" > "$GITHUB_WORKSPACE/.build-phase"
         echo "Add BBR"
         cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
         CONFIG_TCP_CONG_ADVANCED=y
@@ -1518,6 +1572,8 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        echo "apply-bbrv3" > "$GITHUB_WORKSPACE/.build-phase"
+        trap 'rc=$?; cmd=$BASH_COMMAND; line=$LINENO; printf "BBRv3 patch failed at line %s: %s (exit %s)\n" "$line" "$cmd" "$rc" >> "$GITHUB_WORKSPACE/.build-diagnostics"; exit "$rc"' ERR
         echo "::group::Apply BBRv3 patches"
         cd "$COMMON_KERNEL_FOLDER"
 
@@ -1586,6 +1642,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        echo "configure-qdisc" > "$GITHUB_WORKSPACE/.build-phase"
         echo "Enable Important Net Schedulers (qdisc)"
         cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
         CONFIG_NET_SCH_FQ=y
@@ -1598,6 +1655,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        echo "configure-ttl" > "$GITHUB_WORKSPACE/.build-phase"
         echo "Add TTL Target Support"
         cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
         CONFIG_IP_NF_TARGET_TTL=y
@@ -1610,6 +1668,8 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        echo "configure-ipset-ipv6-nat" > "$GITHUB_WORKSPACE/.build-phase"
+        trap 'rc=$?; cmd=$BASH_COMMAND; line=$LINENO; printf "IP set/IPv6 NAT patch failed at line %s: %s (exit %s)\n" "$line" "$cmd" "$rc" >> "$GITHUB_WORKSPACE/.build-diagnostics"; exit "$rc"' ERR
         echo "Add IP SET & IPv6_NAT Support"
         cd "$COMMON_KERNEL_FOLDER"
         KERNEL_VERSION="${{ env.KERNEL_VER }}"
@@ -1653,6 +1713,8 @@ runs:
       run: |
         echo "::group::Add Droidspaces Support"
         set -euo pipefail
+        echo "apply-droidspaces" > "$GITHUB_WORKSPACE/.build-phase"
+        trap 'rc=$?; cmd=$BASH_COMMAND; line=$LINENO; printf "Droidspaces patch failed at line %s: %s (exit %s)\n" "$line" "$cmd" "$rc" >> "$GITHUB_WORKSPACE/.build-diagnostics"; exit "$rc"' ERR
         cd "$COMMON_KERNEL_FOLDER"
         
         echo "Applying patch to enable SYSVIPC without breaking ABI"
@@ -1706,6 +1768,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        echo "configure-build" > "$GITHUB_WORKSPACE/.build-phase"
         cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<'EOF'
         CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
         CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3=n
@@ -1724,6 +1787,7 @@ runs:
       if: ${{ env.OP_RUST_BUILD == 'true' }}
       run: |
         set -euo pipefail
+        echo "configure-rust" > "$GITHUB_WORKSPACE/.build-phase"
         echo "Add Build based configs"
         cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
         CONFIG_ANDROID_BINDER_IPC_RUST=m
@@ -1735,6 +1799,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        echo "save-build-metadata" > "$GITHUB_WORKSPACE/.build-phase"
         echo "Save Build Metadata"
         cd "$ARTIFACTS_FOLDER"
         echo "kernel_version=${{ env.KERNEL_FULL_VER }}" >> "$GITHUB_OUTPUT"
@@ -1747,6 +1812,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        echo "customize-kernel-branding" > "$GITHUB_WORKSPACE/.build-phase"
         echo "Customize Kernel Branding"
         cd "$COMMON_KERNEL_FOLDER"
         mkdir -p out
@@ -1758,6 +1824,7 @@ runs:
       if: ${{ env.KERNEL_VER == '5.10' && (startsWith(env.OP_SOC, 'dimensity') || startsWith(env.OP_SOC, 'helio')) }}
       run: |
         set -euo pipefail
+        echo "disable-gpueb" > "$GITHUB_WORKSPACE/.build-phase"
         echo "Disabling GPUEB for MTK kernel 5.10"
         sed -i '/obj-y.*gpueb/d' "$COMMON_KERNEL_FOLDER/drivers/gpu/mediatek/Makefile"
 
@@ -1765,6 +1832,8 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        echo "disable-vendor-modules" > "$GITHUB_WORKSPACE/.build-phase"
+        trap 'rc=$?; cmd=$BASH_COMMAND; line=$LINENO; printf "Vendor module filtering failed at line %s: %s (exit %s)\n" "$line" "$cmd" "$rc" >> "$GITHUB_WORKSPACE/.build-diagnostics"; exit "$rc"' ERR
         echo "Disabling Vendor / Kernel Modules"
         cd "$COMMON_KERNEL_FOLDER"
 
@@ -1817,6 +1886,8 @@ runs:
       if: ${{ inputs.enable_adios == true || inputs.enable_adios == 'true' }}
       run: |
         set -euo pipefail
+        echo "apply-adios" > "$GITHUB_WORKSPACE/.build-phase"
+        trap 'rc=$?; cmd=$BASH_COMMAND; line=$LINENO; printf "ADIOS patch failed at line %s: %s (exit %s)\n" "$line" "$cmd" "$rc" >> "$GITHUB_WORKSPACE/.build-diagnostics"; exit "$rc"' ERR
         echo "::group::Add ADIOS I/O Scheduler"
 
         cd "$COMMON_KERNEL_FOLDER"

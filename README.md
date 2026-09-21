@@ -98,7 +98,7 @@ SukiSU is the built-in root option:
 [{"type":"SUKISU","hash":"b20dee702035af09cb2ecb5f35443bbc1747f3e6"}]
 ```
 
-This is the verified SukiSU `builtin` commit used with the pinned SUSFS revisions; an explicit ref can still be supplied for testing.
+This is the verified SukiSU `builtin` commit used with the pinned SUSFS revisions. SukiSU's build number follows the official `main` history, so this built-in source reports version 40922 rather than its branch-local commit count. An explicit ref can still be supplied for testing.
 
 The standard configuration flags are:
 

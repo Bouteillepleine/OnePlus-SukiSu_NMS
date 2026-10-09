@@ -24,7 +24,7 @@
 
 Every release contains **two things**. Flash the kernel first, then add NoMount Suite on top of it.
 
-|  | 1️⃣ The kernel — *built here* | 2️⃣ NoMount Suite — *the add-on* |
+|  | 1️⃣ The kernel *built here* | 2️⃣ NoMount Suite — *the add-on* |
 |---|---|---|
 | **What it is** | AnyKernel3 ZIP (`AK3_<device>_…zip`) with `SukiSU` root and `CONFIG_NOMOUNT=y` compiled in | `00_NoMount-Module-vX.Y.Z.zip` — the metamodule that switches NoMount **on** |
 | **Where it comes from** | This repo's GitHub Actions — one ZIP per device | The separate **[NoMount Suite](https://github.com/Bouteillepleine/NoMount-Suite)** — attached to each release as an add-on (sorted to the top of the Assets list) |
@@ -34,7 +34,7 @@ Every release contains **two things**. Flash the kernel first, then add NoMount 
 > [!IMPORTANT]
 > **The kernel on its own does nothing visible.** NoMount is *compiled in* but stays **dormant** until the **NoMount Suite** module activates it. NoMount Suite is the part that carries your injection rules, the WebUI, and the spoofing — think of it like a Magisk/KSU module. **You need both.**
 
-## 🧷 Optional — SUSFS
+## 🧷 Optional SUSFS
 
 Every kernel ZIP also carries `susfs_guard_lkm.ko`, built against that exact kernel and
 inert unless something loads it. Flashing the kernel drops it into `Download`; installing

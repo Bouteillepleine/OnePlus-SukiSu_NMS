@@ -905,6 +905,17 @@ runs:
             printf '\nccflags-y += -I%s -I%s/include\n' "$KSU_KDIR" "$KSU_KDIR" >> "$KSU_KDIR/Kbuild"
             printf 'ccflags-y += -include linux/string.h -include %s/ksu.h\n' "$KSU_KDIR" >> "$KSU_KDIR/Kbuild"
             echo "Appended absolute kernelsu -I paths + force-include ksu.h to $KSU_KDIR/Kbuild"
+            # Kbuild changed $(src) semantics on 6.12, so KSU_KERNEL_DIR resolves relative to
+            # the symlinked drivers/kernelsu and rules built from it (the preinit runner.elf
+            # prerequisite, the -I paths) point outside the tree. Anchor it on the Kbuild's
+            # own absolute directory instead; identical result on older kernels.
+            sed -i \
+              -e 's|^KSU_KERNEL_DIR := $(srctree)/$(src)$|KSU_KERNEL_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))|' \
+              -e 's|^KSU_KERNEL_DIR := $(src)$|KSU_KERNEL_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))|' \
+              "$KSU_KDIR/Kbuild"
+            if grep -q 'KSU_KERNEL_DIR := $(patsubst' "$KSU_KDIR/Kbuild"; then
+              echo "Anchored KSU_KERNEL_DIR on the Kbuild's own directory (6.12 \$(src) fix)"
+            fi
           fi
         fi
         if [ -d "$KERNEL_PLATFORM_FOLDER/KernelSU/uapi" ]; then

@@ -106,6 +106,8 @@ jobs:
       ksu_resolved_hash:    ${{ steps.set-matrix.outputs.ksu_resolved_hash }}
       ksu_options_normalized: ${{ steps.set-matrix.outputs.ksu_options_normalized }}
       nomount_version: ${{ steps.set-matrix.outputs.nomount_version }}
+      susfs_version: ${{ steps.set-matrix.outputs.susfs_version }}
+      susfs_plan: ${{ steps.set-matrix.outputs.susfs_plan }}
     env:
       GH_TOKEN: ${{ github.token }}
       GH_HTTP_TIMEOUT: 600
@@ -308,6 +310,31 @@ jobs:
           fi
 
           echo "nomount_version=$nomount_version" >> "$GITHUB_OUTPUT"
+
+          SUSFS_REF='${{ inputs.susfs_ref }}'
+          susfs_plan="off"
+          susfs_version=""
+          if [ -n "$SUSFS_REF" ]; then
+            susfs_plan=""
+            for key in $(echo "$merged_matrix" | jq -r '.[] | "\(.android_version)-\(.kernel_version)"' | sort -u); do
+              branch="gki-$key"
+              ref="$SUSFS_REF"; [ "$ref" = auto ] && ref="$branch"
+              ver=""
+              for attempt in 1 2 3; do
+                ver="$(curl -fsSL --max-time 30 "https://gitlab.com/simonpunk/susfs4ksu/-/raw/$ref/kernel_patches/include/linux/susfs.h" 2>/dev/null \
+                  | sed -n 's/^#define[[:space:]]\+SUSFS_VERSION[[:space:]]\+"\([^"]*\)".*/\1/p' | head -n1)"
+                [ -n "$ver" ] && break
+                sleep 5
+              done
+              echo "  🧷 SUSFS $branch @ $ref: ${ver:-unknown}"
+              susfs_plan="${susfs_plan:+$susfs_plan · }$branch ${ver:-unknown}"
+              if [ -z "$susfs_version" ]; then susfs_version="${ver:-unknown}"; elif [ "$susfs_version" != "${ver:-unknown}" ]; then susfs_version="mixed"; fi
+            done
+            [ "$SUSFS_REF" = auto ] || susfs_plan="ref $SUSFS_REF · $susfs_plan"
+          fi
+          echo "  ✅ SUSFS: $susfs_plan"
+          echo "susfs_plan=$susfs_plan" >> "$GITHUB_OUTPUT"
+          echo "susfs_version=$susfs_version" >> "$GITHUB_OUTPUT"
           
           merged_matrix=$(echo "$merged_matrix" | jq '
             sort_by(
@@ -368,6 +395,8 @@ jobs:
             echo ""
             echo ""
             echo "**NoMount (hookless)** — \`Bouteillepleine/NoMount-Suite\`, version \`${{ steps.set-matrix.outputs.nomount_version }}\`"
+            echo ""
+            echo "**SUSFS** — \`simonpunk/susfs4ksu\` · "'${{ steps.set-matrix.outputs.susfs_plan }}'
             echo ""
           } >> "$GITHUB_STEP_SUMMARY"
           
@@ -1045,8 +1074,10 @@ jobs:
           > _One metamodule at a time: remove any existing metamodule and reboot before installing this one._
           EOF
 
-          SUSFS_VER=""
+          SUSFS_VER='${{ needs.set-op-model.outputs.susfs_version }}'
+          [[ "$SUSFS_VER" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || SUSFS_VER=""
           for z in downloaded-artifacts/AK3_*.zip; do
+            [ -z "$SUSFS_VER" ] || break
             [ -f "$z" ] || continue
             SUSFS_VER=$(unzip -p "$z" '*_A1[0-9].txt' 2>/dev/null | grep -m1 -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true)
             [ -n "$SUSFS_VER" ] && break

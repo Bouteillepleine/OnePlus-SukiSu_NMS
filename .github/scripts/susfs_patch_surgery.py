@@ -226,8 +226,13 @@ RULES = [
 WINDOW = 80
 
 
+EDGE = 2
+
+
 def walk_from(lines, body, start):
     out, i, pending = lines[:start], start, []
+    nctx = sum(1 for l in body if not l.startswith('+') and not l.startswith('-'))
+    seen = 0
     for l in body:
         if l.startswith('+'):
             pending.append(l[1:])
@@ -238,11 +243,14 @@ def walk_from(lines, body, start):
             i += 1
             continue
         c = l[1:] if l.startswith(' ') else l
+        seen += 1
         if pending:
             out.extend(pending)
             pending = []
         j = next((k for k in range(i, min(i + WINDOW, len(lines))) if lines[k] == c), None)
         if j is None:
+            if seen <= EDGE or seen > nctx - EDGE:
+                continue
             return None, c
         out.extend(lines[i:j + 1])
         i = j + 1
@@ -265,17 +273,24 @@ def reapply_additive(tree, path, hunk):
     if not ctx:
         return None
     old_start = int(re.match(r'@@ -(\d+)', hunk[0]).group(1)) - 1
-    k = next((n for n, c in enumerate(ctx) if len(c.strip()) >= 8), 0)
-    cands = sorted((i for i, l in enumerate(lines) if l == ctx[k]), key=lambda i: abs(i - (old_start + k)))
+    cands = []
+    for k, c in enumerate(ctx):
+        if len(c.strip()) < 8:
+            continue
+        cands = sorted((i for i, l in enumerate(lines) if l == c), key=lambda i: abs(i - (old_start + k)))
+        if cands:
+            break
     if not cands:
-        print('   context miss: %s anchor: %r' % (path, ctx[k]))
+        print('   context miss: %s anchor: %r' % (path, ctx[0]))
         return None
     miss = None
     for cand in cands:
         cur = cand
-        for c in reversed(ctx[:k]):
+        for n, c in reversed(list(enumerate(ctx[:k]))):
             j = next((m for m in range(cur - 1, max(cur - WINDOW, -1), -1) if lines[m] == c), None)
             if j is None:
+                if n < EDGE:
+                    continue
                 cur = None
                 break
             cur = j

@@ -21,15 +21,15 @@ fi
 
 cd "$COMMON_KERNEL_FOLDER"
 
-rejects="$(patch -p1 --forward --dry-run < "$SUSFS_PATCH" 2>&1 | awk '/^checking file/{f=$3} /Hunk #[0-9]+ FAILED/{n=$2; gsub("#","",n); print f":"n}')" || true
+rejects="$(patch -p1 -F0 --forward --dry-run < "$SUSFS_PATCH" 2>&1 | awk '/^checking file/{f=$3} /Hunk #[0-9]+ FAILED/{n=$2; gsub("#","",n); print f":"n}')" || true
 if [ -n "$rejects" ]; then
   echo "SUSFS kernel patch rejects on ${ANDROID_VER}-${KERNEL_VER} ($(grep -m1 '^SUBLEVEL' Makefile | tr -d ' ')):"
   printf '%s\n' "$rejects" | sed 's/^/   rejected: /'
 fi
 python3 -I "$SURGERY" --drop security/selinux/selinuxfs.c "$SUSFS_PATCH" . $rejects
-if ! patch -p1 --forward --dry-run < "$SUSFS_PATCH" >/dev/null 2>&1; then
+if ! patch -p1 -F0 --forward --dry-run < "$SUSFS_PATCH" >/dev/null 2>&1; then
   echo "::error::apply_susfs: SUSFS kernel patch still rejects after reconciliation"
-  patch -p1 --forward --dry-run < "$SUSFS_PATCH" 2>&1 | grep -E '^(checking file|Hunk .*FAILED)'
+  patch -p1 -F0 --forward --dry-run < "$SUSFS_PATCH" 2>&1 | grep -E '^(checking file|Hunk .*FAILED)'
   exit 1
 fi
 
@@ -38,6 +38,16 @@ export OP_SPOOF_UNAME="${OP_SPOOF_UNAME:-true}"
 bash "$FIXER"
 
 cd "$COMMON_KERNEL_FOLDER"
+
+if grep -q '#ifndef KSU_NO_PREINIT' fs/exec.c && ! grep -q '^#define KSU_NO_PREINIT' fs/exec.c; then
+  if grep -rqs 'ksu_setup_preinit_file' "$KSU_FOLDER/kernel"; then
+    echo "KSU tree provides preinit; leaving the SUSFS preinit hooks enabled"
+  else
+    sed -i '0,/^#ifdef CONFIG_KSU_SUSFS$/s//#ifndef KSU_NO_PREINIT\n#define KSU_NO_PREINIT\n#endif\n&/' fs/exec.c
+    grep -q '^#define KSU_NO_PREINIT$' fs/exec.c || { echo "::error::apply_susfs: could not define KSU_NO_PREINIT in fs/exec.c"; exit 1; }
+    echo "defined KSU_NO_PREINIT; this KSU tree has no preinit"
+  fi
+fi
 
 SH="$KSU_FOLDER/kernel/feature/selinux_hide.c"
 python3 -I "$SCRIPTS_DIR/susfs_sukisu_selinux_hide.py" "$SH"

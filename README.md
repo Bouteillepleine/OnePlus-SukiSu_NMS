@@ -173,12 +173,12 @@ Appreciated, never expected.
 
 ## Acknowledgments
 
-- **[NoMount Suite](https://github.com/Bouteillepleine/NoMount-Suite)** &amp; all contributors — NoMount development 🙌 (built on **[maxsteeel/nomount](https://github.com/maxsteeel/nomount)**)
-- **SukiSU Ultra** — the root solution
+- **[NoMount Suite](https://github.com/Bouteillepleine/NoMount-Suite)** &amp; all contributors (built on **[maxsteeel/nomount](https://github.com/maxsteeel/nomount)**)
+- **SukiSU Ultra**, the root solution
 - **AnyKernel3** by osm0sis and contributors
-- **[WildKernels/OnePlus_KernelSU_SUSFS](https://github.com/WildKernels/OnePlus_KernelSU_SUSFS)** — the excellent OnePlus build framework this is forked from
-- **[simonpunk/susfs4ksu](https://gitlab.com/simonpunk/susfs4ksu)** — SUSFS, patched into every kernel here
-- **OnePlusOSS** — kernel source
+- **[WildKernels/OnePlus_KernelSU_SUSFS](https://github.com/WildKernels/OnePlus_KernelSU_SUSFS)**, the excellent OnePlus build framework this is forked from
+- **[simonpunk/susfs4ksu](https://gitlab.com/simonpunk/susfs4ksu)**, SUSFS, patched into every kernel here
+- **OnePlusOSS**, kernel source
 - Community testers and contributors
 ---
 

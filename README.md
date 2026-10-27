@@ -37,8 +37,9 @@ Every release contains two things. Flash the kernel first, then add NoMount Suit
 ## SUSFS
 
 Every kernel has **SUSFS** compiled in, patched from [simonpunk/susfs4ksu](https://gitlab.com/simonpunk/susfs4ksu)
-at build time (the version is in the release notes and the build summary). It stays inert until it is configured: install
-`00_SUSFS-Module-vX.Y.Z.zip` from the Assets and the usual paths and mounts are hidden at every boot.
+at build time (the version is in the release notes and the build summary). NoMount needs nothing from it:
+nothing the engine serves is a mount. It is there for whatever hiding you choose to leave to SUSFS, driven by
+the `ksu_susfs` tool from the upstream module, which these releases do not ship.
 
 The `susfs_ref` workflow input picks the susfs4ksu ref: `auto` follows the gki branch of each device,
 a 40-char SHA pins a release, empty builds without SUSFS.

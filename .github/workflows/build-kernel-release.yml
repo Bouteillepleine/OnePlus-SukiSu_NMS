@@ -859,49 +859,6 @@ jobs:
             echo "MOD_MIRRORED=$MOD_MIRRORED"
           } >> "$GITHUB_ENV"
 
-      - name: 📦 Pack the SUSFS module into this release
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          SUSFS_MOD_SHIPPED=false
-          SUSFS_MOD_ASSET=""
-          SUSFS_REF='${{ inputs.susfs_ref }}'
-          if [ -n "$SUSFS_REF" ]; then
-            SUSFS_URL="https://gitlab.com/simonpunk/susfs4ksu.git"
-            MOD_DIR="$RUNNER_TEMP/susfs-mod"
-            rm -rf "$MOD_DIR"; mkdir -p "$MOD_DIR"
-            fetched=false
-            if [[ "$SUSFS_REF" =~ ^[0-9a-f]{40}$ ]]; then
-              git init -q "$MOD_DIR/src" \
-                && git -C "$MOD_DIR/src" remote add origin "$SUSFS_URL" \
-                && git -C "$MOD_DIR/src" fetch -q --depth 1 origin "$SUSFS_REF" \
-                && git -C "$MOD_DIR/src" checkout -q FETCH_HEAD && fetched=true
-            else
-              [ "$SUSFS_REF" = auto ] && SUSFS_REF=gki-android16-6.12
-              git clone -q --depth 1 -b "$SUSFS_REF" "$SUSFS_URL" "$MOD_DIR/src" && fetched=true
-            fi
-            if [ "$fetched" = true ] && [ -f "$MOD_DIR/src/ksu_module_susfs/module.prop" ]; then
-              SUSFS_MOD_VER=$(awk -F= '/^version=/{print $2}' "$MOD_DIR/src/ksu_module_susfs/module.prop" | head -1 | tr -d ' \r')
-              SUSFS_MOD_ASSET="00_SUSFS-Module-v${SUSFS_MOD_VER#v}.zip"
-              if (cd "$MOD_DIR/src/ksu_module_susfs" && zip -qr9 "$GITHUB_WORKSPACE/downloaded-artifacts/${SUSFS_MOD_ASSET}" . -x "*.git*") \
-                 && unzip -tqq "./downloaded-artifacts/${SUSFS_MOD_ASSET}" 2>/dev/null; then
-                SUSFS_MOD_SHIPPED=true
-                echo "✅ packed $SUSFS_MOD_ASSET from susfs4ksu@${SUSFS_REF} ($(stat -c%s "./downloaded-artifacts/${SUSFS_MOD_ASSET}") bytes)"
-              else
-                rm -f "./downloaded-artifacts/${SUSFS_MOD_ASSET}"
-                echo "::warning::Could not pack ksu_module_susfs from susfs4ksu@${SUSFS_REF}; this release ships without it."
-              fi
-            else
-              echo "::warning::Could not fetch ksu_module_susfs from susfs4ksu@${SUSFS_REF}; this release ships without it."
-            fi
-          fi
-
-          {
-            echo "SUSFS_MOD_ASSET=$SUSFS_MOD_ASSET"
-            echo "SUSFS_MOD_SHIPPED=$SUSFS_MOD_SHIPPED"
-          } >> "$GITHUB_ENV"
-
       - name: 🔐 Generate Checksums
         shell: bash
         run: |
@@ -1088,17 +1045,10 @@ jobs:
           ## 🧷 SUSFS
 
           Every kernel above has **SUSFS ${SUSFS_VER}** compiled in, patched from
-          [simonpunk/susfs4ksu](https://gitlab.com/simonpunk/susfs4ksu) at build time. It is inert until
-          something configures it.
+          [simonpunk/susfs4ksu](https://gitlab.com/simonpunk/susfs4ksu) at build time. NoMount needs nothing from
+          it: nothing the engine serves is a mount. It is there for whatever hiding you choose to leave to SUSFS,
+          driven by the \`ksu_susfs\` tool from the upstream module, which this release does not ship.
           EOF
-          if [ "${SUSFS_MOD_SHIPPED:-false}" = "true" ]; then
-          cat << EOF >> release_notes.md
-
-          > **To use it:** install \`$SUSFS_MOD_ASSET\` (in the Assets) from SukiSU Manager → **Modules →
-          > Install from storage**. It carries the \`ksu_susfs\` tool and the boot scripts that hide the
-          > usual paths and mounts. Skip it and nothing changes.
-          EOF
-          fi
           fi
           cat << EOF >> release_notes.md
 

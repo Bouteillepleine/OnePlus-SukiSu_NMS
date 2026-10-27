@@ -1045,9 +1045,7 @@ jobs:
           ## 🧷 SUSFS
 
           Every kernel above has **SUSFS ${SUSFS_VER}** compiled in, patched from
-          [simonpunk/susfs4ksu](https://gitlab.com/simonpunk/susfs4ksu) at build time. NoMount needs nothing from
-          it: nothing the engine serves is a mount. It is there for whatever hiding you choose to leave to SUSFS,
-          driven by the \`ksu_susfs\` tool from the upstream module, which this release does not ship.
+          [simonpunk/susfs4ksu](https://gitlab.com/simonpunk/susfs4ksu) at build time.
           EOF
           fi
           cat << EOF >> release_notes.md

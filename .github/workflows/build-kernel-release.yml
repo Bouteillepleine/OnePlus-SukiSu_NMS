@@ -1045,7 +1045,12 @@ jobs:
           > _One metamodule at a time: remove any existing metamodule and reboot before installing this one._
           EOF
 
-          SUSFS_VER=$(find downloaded-artifacts -maxdepth 1 -name 'AK3_*_SuSFS_*.zip' | head -1 | sed -n 's/.*_SuSFS_\(v[0-9.]*\)\.zip$/\1/p')
+          SUSFS_VER=""
+          for z in downloaded-artifacts/AK3_*.zip; do
+            [ -f "$z" ] || continue
+            SUSFS_VER=$(unzip -p "$z" '*_A1[0-9].txt' 2>/dev/null | grep -m1 -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true)
+            [ -n "$SUSFS_VER" ] && break
+          done
           if [ -n "$SUSFS_VER" ]; then
           cat << EOF >> release_notes.md
 

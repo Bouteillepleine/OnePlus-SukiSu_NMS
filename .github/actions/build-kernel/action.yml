@@ -2412,7 +2412,7 @@ runs:
         } >> "$GITHUB_STEP_SUMMARY"
 
     - name: Upload Kernel Config
-      if: ${{ always() && !cancelled() && env.REAL_CONFIG_FILE != '' }}
+      if: ${{ always() && !cancelled() && inputs.debug == 'true' && env.REAL_CONFIG_FILE != '' }}
       uses: actions/upload-artifact@v7
       with:
         name: "${{ env.OP_MODEL }}_${{ env.OP_OS_VERSION }}_${{ env.KERNEL_FULL_VER }}_config"

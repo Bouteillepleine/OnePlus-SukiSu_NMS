@@ -45,7 +45,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       STATE_FILE: nms_canary_state.txt
-      KSU_OPTIONS: '[{"type":"SUKISU","hash":"main"}]'
+      KSU_OPTIONS: '[{"type":"SUKISU","hash":"v4.2.1"}]'
       CANARY_TARGET: ${{ github.event.inputs.canary_target || 'OP15-6.12.81' }}
     steps:
       - name: Collect upstream HEADs
@@ -63,10 +63,17 @@ jobs:
           Baka-SU/BakaSU#main#BakaSU root impl
           WildKernels/kernel_patches#main#hooks + susfs, UNPINNED
           Bouteillepleine/kernel_patches#main#our _ghost/_pathhide/_hook
-          Bouteillepleine/susfs4ksu-lkm#main#susfs lkm
           Bouteillepleine/NoMount-Suite#main#Prism engine src
           vc-teahouse/Baseband-guard#main#baseband guard
           SOURCES
+          while IFS='#' read -r proj ref note; do
+            [ -n "$proj" ] || continue
+            sha=$(curl -fsS "https://gitlab.com/api/v4/projects/${proj/\//%2F}/repository/commits/$ref" 2>/dev/null | jq -r '.id // empty' || true)
+            [ -n "$sha" ] || sha=UNREACHABLE
+            printf '%s %s %s (%s)\n' "$proj" "$ref" "$sha" "$note" >> heads.txt
+          done <<'GITLAB'
+          simonpunk/susfs4ksu#gki-android16-6.12#susfs kernel patch, UNPINNED
+          GITLAB
           echo '--- tracked upstream HEADs ---'
           cat heads.txt
           if grep -q UNREACHABLE heads.txt; then

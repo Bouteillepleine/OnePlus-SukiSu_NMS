@@ -41,10 +41,10 @@ on:
         type: string
         default: ''
       ksu_options:
-        description: 'Enter SukiSU build json'
+        description: 'Enter SukiSU build json. hash = any branch, tag or sha in SukiSU-Ultra/SukiSU-Ultra; with SUSFS on, configs/apply_susfs_patches.sh is validated against v4.2.1 only.'
         required: true
         type: string
-        default: '[{"type":"SUKISU","hash":"main"}]'
+        default: '[{"type":"SUKISU","hash":"v4.2.1"}]'
       optimize_level:
         description: "Compiler optimization level"
         required: true
@@ -74,11 +74,11 @@ on:
         required: false
         type: boolean
         default: false
-      susfs_lkm_ref:
-        description: 'Branch/tag/SHA of Bouteillepleine/susfs4ksu-lkm to build susfs_guard_lkm.ko from, against the same tree and toolchain as the kernel. Empty = skip. A branch moves, so a release you want to reproduce should pass a tag or SHA.'
+      susfs_ref:
+        description: 'simonpunk/susfs4ksu ref to patch SUSFS into every kernel. auto = the gki branch matching each device, a branch/tag/40-char SHA pins it (a release you want to reproduce should pass a SHA), empty = build without SUSFS.'
         required: false
         type: string
-        default: 'dev2'
+        default: auto
       nomount_ref:
         description: 'NoMount-Suite branch/ref for the Prism engine src + patches (default main; set a branch to validate it before it is released). The engine ships inside the Suite repo, under hookless/.'
         required: false
@@ -125,7 +125,7 @@ jobs:
           input="${{ github.event.inputs.op_model }}"
           target_model="${{ github.event.inputs.op_target_model }}"
           ksu_options_raw='${{ github.event.inputs.ksu_options }}'
-          if ! ksu_options_normalized=$(echo "$ksu_options_raw" | jq -c 'map(if .type then .type |= ascii_upcase | if .hash == null then .hash = "v4.1.3" else . end else error("No type found") end)' 2>&1); then
+          if ! ksu_options_normalized=$(echo "$ksu_options_raw" | jq -c 'map(if .type then .type |= ascii_upcase | if .hash == null then .hash = "v4.2.1" else . end else error("No type found") end)' 2>&1); then
             echo "::error::ksu_options validation failed: $ksu_options_normalized"
             exit 1
           fi
@@ -574,7 +574,7 @@ jobs:
           optimize_level: ${{ inputs.optimize_level }}
           build_timestamp: ${{ inputs.build_timestamp }}
           enable_adios: ${{ inputs.enable_adios }}
-          susfs_lkm_ref: ${{ inputs.susfs_lkm_ref }}
+          susfs_ref: ${{ inputs.susfs_ref }}
           nomount_ref: ${{ inputs.nomount_ref }}
           patches_ref: ${{ inputs.patches_ref }}
           spoof_config_gz: ${{ inputs.spoof_config_gz || 'config' }}
@@ -600,6 +600,7 @@ jobs:
             echo "Outputs:"
             echo "  - Kernel: ${{ steps.build.outputs.kernel_version }}"
             echo "  - SukiSU: v${{ steps.build.outputs.ksu_version }}"
+            echo "  - SUSFS: ${{ steps.build.outputs.susfs_version || 'off' }}"
             echo "ksun_ver=" >> "$GITHUB_OUTPUT"
             echo "ksu_ver=${{ steps.build.outputs.ksu_version }}" >> "$GITHUB_OUTPUT"
             echo "  - Build time: ${{ steps.build.outputs.build_time }}s"
@@ -640,6 +641,9 @@ jobs:
             cat >> $GITHUB_STEP_SUMMARY << EOF
           | **SukiSU** | v${{ steps.build.outputs.ksu_version }} |
           EOF
+            if [ -n "${{ steps.build.outputs.susfs_version }}" ]; then
+              echo "| **SUSFS** | ${{ steps.build.outputs.susfs_version }} |" >> $GITHUB_STEP_SUMMARY
+            fi
           cat >> $GITHUB_STEP_SUMMARY << EOF
           | **Build Time** | ${{ steps.build.outputs.build_time }}s |
           EOF
@@ -826,54 +830,47 @@ jobs:
             echo "MOD_MIRRORED=$MOD_MIRRORED"
           } >> "$GITHUB_ENV"
 
-      - name: 📦 Pack the kernel module loader into this release
+      - name: 📦 Pack the SUSFS module into this release
         shell: bash
         run: |
           set -euo pipefail
 
-          # The loader lives as SOURCE on a branch, not as a released zip: a prebuilt
-          # artifact committed to a branch goes stale the moment the source moves. Zip it
-          # here so what ships always matches what is committed.
-          #
-          # Best-effort throughout: a release must not fail because an add-on could not be
-          # fetched, so every step is guarded and the worst case is a release without it.
-          LOADER_REPO="Bouteillepleine/kbuild"
-          LOADER_REF="loader"
-          LOADER_DIR="$RUNNER_TEMP/loader"
-          rm -rf "$LOADER_DIR"; mkdir -p "$LOADER_DIR"
-          LOADER_SHIPPED=false
-          LOADER_ASSET=""
-
-          if curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors --connect-timeout 15 \
-               -H "Authorization: Bearer $GH_TOKEN" \
-               "https://api.github.com/repos/${LOADER_REPO}/tarball/${LOADER_REF}" \
-               -o "$LOADER_DIR/src.tar.gz" 2>/dev/null && [ -s "$LOADER_DIR/src.tar.gz" ]; then
-            # --strip-components=1: the tarball wraps everything in a <owner>-<repo>-<sha>
-            # directory, and a KernelSU module needs module.prop at the ZIP ROOT.
-            tar -xzf "$LOADER_DIR/src.tar.gz" -C "$LOADER_DIR" --strip-components=1 2>/dev/null || true
-            rm -f "$LOADER_DIR/src.tar.gz"
-          fi
-
-          if [ -f "$LOADER_DIR/module.prop" ]; then
-            LOADER_VER=$(awk -F= '/^version=/{print $2}' "$LOADER_DIR/module.prop" | head -1 | tr -d ' \r')
-            LOADER_ASSET="00_Loader-Module-v${LOADER_VER#v}.zip"
-            if (cd "$LOADER_DIR" && zip -qr9 "$GITHUB_WORKSPACE/downloaded-artifacts/${LOADER_ASSET}" . -x "*.git*") \
-               && unzip -tqq "./downloaded-artifacts/${LOADER_ASSET}" 2>/dev/null; then
-              LOADER_SHIPPED=true
-              echo "✅ packed $LOADER_ASSET from ${LOADER_REPO}@${LOADER_REF} ($(stat -c%s "./downloaded-artifacts/${LOADER_ASSET}") bytes)"
+          SUSFS_MOD_SHIPPED=false
+          SUSFS_MOD_ASSET=""
+          SUSFS_REF='${{ inputs.susfs_ref }}'
+          if [ -n "$SUSFS_REF" ]; then
+            SUSFS_URL="https://gitlab.com/simonpunk/susfs4ksu.git"
+            MOD_DIR="$RUNNER_TEMP/susfs-mod"
+            rm -rf "$MOD_DIR"; mkdir -p "$MOD_DIR"
+            fetched=false
+            if [[ "$SUSFS_REF" =~ ^[0-9a-f]{40}$ ]]; then
+              git init -q "$MOD_DIR/src" \
+                && git -C "$MOD_DIR/src" remote add origin "$SUSFS_URL" \
+                && git -C "$MOD_DIR/src" fetch -q --depth 1 origin "$SUSFS_REF" \
+                && git -C "$MOD_DIR/src" checkout -q FETCH_HEAD && fetched=true
             else
-              rm -f "./downloaded-artifacts/${LOADER_ASSET}"
-              echo "::warning::Could not pack the loader from ${LOADER_REPO}@${LOADER_REF}; this release ships without it."
+              [ "$SUSFS_REF" = auto ] && SUSFS_REF=gki-android16-6.12
+              git clone -q --depth 1 -b "$SUSFS_REF" "$SUSFS_URL" "$MOD_DIR/src" && fetched=true
             fi
-          else
-            echo "::warning::${LOADER_REPO}@${LOADER_REF} has no module.prop; this release ships without the loader."
+            if [ "$fetched" = true ] && [ -f "$MOD_DIR/src/ksu_module_susfs/module.prop" ]; then
+              SUSFS_MOD_VER=$(awk -F= '/^version=/{print $2}' "$MOD_DIR/src/ksu_module_susfs/module.prop" | head -1 | tr -d ' \r')
+              SUSFS_MOD_ASSET="00_SUSFS-Module-v${SUSFS_MOD_VER#v}.zip"
+              if (cd "$MOD_DIR/src/ksu_module_susfs" && zip -qr9 "$GITHUB_WORKSPACE/downloaded-artifacts/${SUSFS_MOD_ASSET}" . -x "*.git*") \
+                 && unzip -tqq "./downloaded-artifacts/${SUSFS_MOD_ASSET}" 2>/dev/null; then
+                SUSFS_MOD_SHIPPED=true
+                echo "✅ packed $SUSFS_MOD_ASSET from susfs4ksu@${SUSFS_REF} ($(stat -c%s "./downloaded-artifacts/${SUSFS_MOD_ASSET}") bytes)"
+              else
+                rm -f "./downloaded-artifacts/${SUSFS_MOD_ASSET}"
+                echo "::warning::Could not pack ksu_module_susfs from susfs4ksu@${SUSFS_REF}; this release ships without it."
+              fi
+            else
+              echo "::warning::Could not fetch ksu_module_susfs from susfs4ksu@${SUSFS_REF}; this release ships without it."
+            fi
           fi
 
           {
-            echo "LOADER_REPO=$LOADER_REPO"
-            echo "LOADER_REF=$LOADER_REF"
-            echo "LOADER_ASSET=$LOADER_ASSET"
-            echo "LOADER_SHIPPED=$LOADER_SHIPPED"
+            echo "SUSFS_MOD_ASSET=$SUSFS_MOD_ASSET"
+            echo "SUSFS_MOD_SHIPPED=$SUSFS_MOD_SHIPPED"
           } >> "$GITHUB_ENV"
 
       - name: 🔐 Generate Checksums
@@ -1048,20 +1045,24 @@ jobs:
           > _One metamodule at a time: remove any existing metamodule and reboot before installing this one._
           EOF
 
-          # Only when the loader actually made it into the Assets: a release that tells
-          # people to install something it does not ship is worse than saying nothing.
-          if [ "${LOADER_SHIPPED:-false}" = "true" ]; then
+          SUSFS_VER=$(find downloaded-artifacts -maxdepth 1 -name 'AK3_*_SuSFS_*.zip' | head -1 | sed -n 's/.*_SuSFS_\(v[0-9.]*\)\.zip$/\1/p')
+          if [ -n "$SUSFS_VER" ]; then
           cat << EOF >> release_notes.md
 
-          ## 🧷 Optional — SUSFS
+          ## 🧷 SUSFS
 
-          Every kernel zip above also carries \`susfs_guard_lkm.ko\`, compiled against that exact
-          kernel and inert unless something loads it. The loader is \`$LOADER_ASSET\`, below.
-
-          > **How it works:** the loader is a KernelSU module that loads a \`.ko\` at boot. Flashing
-          > the kernel drops \`susfs_guard_lkm.ko\` into \`Download\`; installing the loader picks it up
-          > and loads it on every boot, with bootloop protection if it ever misbehaves.
+          Every kernel above has **SUSFS ${SUSFS_VER}** compiled in, patched from
+          [simonpunk/susfs4ksu](https://gitlab.com/simonpunk/susfs4ksu) at build time. It is inert until
+          something configures it.
           EOF
+          if [ "${SUSFS_MOD_SHIPPED:-false}" = "true" ]; then
+          cat << EOF >> release_notes.md
+
+          > **To use it:** install \`$SUSFS_MOD_ASSET\` (in the Assets) from SukiSU Manager → **Modules →
+          > Install from storage**. It carries the \`ksu_susfs\` tool and the boot scripts that hide the
+          > usual paths and mounts. Skip it and nothing changes.
+          EOF
+          fi
           fi
           cat << EOF >> release_notes.md
 

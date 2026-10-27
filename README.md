@@ -34,14 +34,14 @@ Every release contains two things. Flash the kernel first, then add NoMount Suit
 > [!IMPORTANT]
 > **The kernel on its own does nothing visible.** NoMount is *compiled in* but stays **dormant** until the **NoMount Suite** module activates it. NoMount Suite is the part that carries your injection rules, the WebUI, and the spoofing. Think of it like a Magisk/KSU module. **You need both.**
 
-## Optional: SUSFS
+## SUSFS
 
-Every kernel ZIP also carries `susfs_guard_lkm.ko`, built against that exact kernel and
-inert unless something loads it. Flashing the kernel drops it into `Download`; installing
-`00_Loader-Module-vX.Y.zip` (also in the Assets) picks it up and loads it at every boot.
+Every kernel has **SUSFS** compiled in, patched from [simonpunk/susfs4ksu](https://gitlab.com/simonpunk/susfs4ksu)
+at build time (the version is in the ZIP name). It stays inert until it is configured: install
+`00_SUSFS-Module-vX.Y.Z.zip` from the Assets and the usual paths and mounts are hidden at every boot.
 
-Skip it and nothing changes. One module per kernel: by design it will not load on a
-build it was not compiled against.
+The `susfs_ref` workflow input picks the susfs4ksu ref: `auto` follows the gki branch of each device,
+a 40-char SHA pins a release, empty builds without SUSFS.
 
 ---
 
@@ -149,7 +149,7 @@ Actions → Build and Release OnePlus Kernels → Run workflow
 Root option:
 
 ```json
-[{"type":"SUKISU","hash":"main"}]
+[{"type":"SUKISU","hash":"v4.2.1"}]
 ```
 
 > **First run:** enable **Force toolchain sync before build** (auto-on for releases). Required once to populate the toolchain cache.
@@ -178,7 +178,7 @@ Appreciated, never expected.
 - **SukiSU Ultra** — the root solution
 - **AnyKernel3** by osm0sis and contributors
 - **[WildKernels/OnePlus_KernelSU_SUSFS](https://github.com/WildKernels/OnePlus_KernelSU_SUSFS)** — the excellent OnePlus build framework this is forked from
-- **[inforcqb/susfs4ksu-lkm](https://github.com/inforcqb/susfs4ksu-lkm)** — SUSFS as a loadable module, which is what each kernel here carries
+- **[simonpunk/susfs4ksu](https://gitlab.com/simonpunk/susfs4ksu)** — SUSFS, patched into every kernel here
 - **OnePlusOSS** — kernel source
 - Community testers and contributors
 ---

@@ -41,11 +41,11 @@ inputs:
     required: false
     type: boolean
     default: false
-  susfs_lkm_ref:
-    description: 'Branch/ref of Bouteillepleine/susfs4ksu-lkm to build susfs_guard_lkm.ko from, against THIS kernel tree. Empty = do not build it. SUSFS is not in the kernel source; this is the loadable-module port, so it must be compiled against the same tree and toolchain as the Image or its struct offsets and kCFI type hashes will not match.'
+  susfs_ref:
+    description: 'simonpunk/susfs4ksu ref to patch SUSFS into the kernel from. auto = the gki-<android>-<kernel> branch of each device, a branch/tag/40-char SHA pins it, empty = build without SUSFS. It goes in after the NoMount stack; hunks that no longer fit are re-anchored by .github/scripts/susfs_patch_surgery.py and the NoMount verifier runs again afterwards.'
     required: false
     type: string
-    default: ''
+    default: auto
   nomount_ref:
     description: 'NoMount-Suite branch/ref to source the Prism engine src + patches from (default main; set a branch to validate it before it is released). The engine ships inside the Suite repo, under hookless/.'
     required: false
@@ -75,6 +75,9 @@ outputs:
   ksu_type:
     description: 'SukiSU Variant'
     value: ${{ steps.save_metadata.outputs.ksu_type }}
+  susfs_version:
+    description: 'SUSFS version patched into the kernel (empty when built without it)'
+    value: ${{ steps.save_metadata.outputs.susfs_version }}
   build_timestamp:
     description: 'Effective kernel build timestamp used in uname -a'
     value: ${{ steps.save_metadata.outputs.build_timestamp }}
@@ -764,6 +767,42 @@ runs:
         retry_clone "https://github.com/Bouteillepleine/kernel_patches.git" "${_pref:-main}" "1" "bouton_kernel_patches"
         echo "kernel_patches ref: ${_pref:-main}"
 
+        SUSFS_REF='${{ inputs.susfs_ref }}'
+        SUSFS_URL="https://gitlab.com/simonpunk/susfs4ksu.git"
+        SUSFS_BRANCH="gki-${ANDROID_VER}-${KERNEL_VER}"
+        SUSFS_DIR="$GITHUB_WORKSPACE/susfs4ksu"
+        rm -rf "$SUSFS_DIR"
+        if [ -z "$SUSFS_REF" ]; then
+          echo "SUSFS_ON=false" >> "$GITHUB_ENV"
+          echo "susfs_ref is empty: building without SUSFS"
+        else
+          if [ "$SUSFS_REF" = auto ]; then
+            retry_clone "$SUSFS_URL" "$SUSFS_BRANCH" "1" "$SUSFS_DIR"
+          elif [[ "$SUSFS_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            git init -q "$SUSFS_DIR"
+            git -C "$SUSFS_DIR" remote add origin "$SUSFS_URL"
+            attempt=1
+            until git -C "$SUSFS_DIR" fetch --depth 1 origin "$SUSFS_REF"; do
+              [ "$attempt" -lt 3 ] || { echo "::error::could not fetch susfs4ksu@$SUSFS_REF"; exit 1; }
+              sleep $((attempt++ * 5))
+            done
+            git -C "$SUSFS_DIR" checkout -q FETCH_HEAD
+          else
+            retry_clone "$SUSFS_URL" "$SUSFS_REF" "1" "$SUSFS_DIR"
+          fi
+          if [ ! -f "$SUSFS_DIR/kernel_patches/50_add_susfs_in_${SUSFS_BRANCH}.patch" ]; then
+            echo "::error::susfs4ksu@$SUSFS_REF carries no kernel_patches/50_add_susfs_in_${SUSFS_BRANCH}.patch; pass a ref from the $SUSFS_BRANCH branch or leave susfs_ref on auto"
+            exit 1
+          fi
+          {
+            echo "SUSFS_ON=true"
+            echo "SUSFS_FOLDER=$SUSFS_DIR"
+            echo "SUSFS_KERNEL_BRANCH=$SUSFS_BRANCH"
+            echo "SUSFS_COMMIT_SHA=$(git -C "$SUSFS_DIR" rev-parse HEAD)"
+          } >> "$GITHUB_ENV"
+          echo "susfs4ksu: $SUSFS_REF = $(git -C "$SUSFS_DIR" log --oneline -1)"
+        fi
+
         echo "BOUTEILLE_KERNEL_PATCHES_FOLDER=$GITHUB_WORKSPACE/bouton_kernel_patches" >> "$GITHUB_ENV"
         echo "BOUTEILLE_BBR3_PATCHES_FOLDER=$GITHUB_WORKSPACE/bouton_kernel_patches/common/bbrv3" >> "$GITHUB_ENV"
 
@@ -899,30 +938,34 @@ runs:
           exit 1
         fi
         KSU_KDIR="$KERNEL_PLATFORM_FOLDER/KernelSU/kernel"
-        if [ -d "$KSU_KDIR/include" ]; then
+        if [ "${SUSFS_ON:-false}" = true ]; then
+          echo "SUSFS build: configs/apply_susfs_patches.sh owns the KernelSU include paths and externs"
+        elif [ -d "$KSU_KDIR/include" ]; then
           cp -f "$KSU_KDIR/include/"*.h "$KSU_KDIR/" 2>/dev/null || true
           if [ -f "$KSU_KDIR/Kbuild" ]; then
             printf '\nccflags-y += -I%s -I%s/include\n' "$KSU_KDIR" "$KSU_KDIR" >> "$KSU_KDIR/Kbuild"
             printf 'ccflags-y += -include linux/string.h -include %s/ksu.h\n' "$KSU_KDIR" >> "$KSU_KDIR/Kbuild"
             echo "Appended absolute kernelsu -I paths + force-include ksu.h to $KSU_KDIR/Kbuild"
-            # Kbuild changed $(src) semantics on 6.12, so KSU_KERNEL_DIR resolves relative to
-            # the symlinked drivers/kernelsu and rules built from it (the preinit runner.elf
-            # prerequisite, the -I paths) point outside the tree. Anchor it on the Kbuild's
-            # own absolute directory instead; identical result on older kernels.
-            sed -i \
-              -e 's|^KSU_KERNEL_DIR := $(srctree)/$(src)$|KSU_KERNEL_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))|' \
-              -e 's|^KSU_KERNEL_DIR := $(src)$|KSU_KERNEL_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))|' \
-              "$KSU_KDIR/Kbuild"
-            if grep -q 'KSU_KERNEL_DIR := $(patsubst' "$KSU_KDIR/Kbuild"; then
-              echo "Anchored KSU_KERNEL_DIR on the Kbuild's own directory (6.12 \$(src) fix)"
-            fi
           fi
         fi
-        if [ -d "$KERNEL_PLATFORM_FOLDER/KernelSU/uapi" ]; then
+        # Kbuild changed $(src) semantics on 6.12, so KSU_KERNEL_DIR resolves relative to
+        # the symlinked drivers/kernelsu and rules built from it (the preinit runner.elf
+        # prerequisite, the -I paths) point outside the tree. Anchor it on the Kbuild's
+        # own absolute directory instead; identical result on older kernels.
+        if [ -f "$KSU_KDIR/Kbuild" ]; then
+          sed -i \
+            -e 's|^KSU_KERNEL_DIR := $(srctree)/$(src)$|KSU_KERNEL_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))|' \
+            -e 's|^KSU_KERNEL_DIR := $(src)$|KSU_KERNEL_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))|' \
+            "$KSU_KDIR/Kbuild"
+          if grep -q 'KSU_KERNEL_DIR := $(patsubst' "$KSU_KDIR/Kbuild"; then
+            echo "Anchored KSU_KERNEL_DIR on the Kbuild's own directory (6.12 \$(src) fix)"
+          fi
+        fi
+        if [ "${SUSFS_ON:-false}" != true ] && [ -d "$KERNEL_PLATFORM_FOLDER/KernelSU/uapi" ]; then
           mkdir -p "$COMMON_KERNEL_FOLDER/include/uapi"
           cp "$KERNEL_PLATFORM_FOLDER/KernelSU/uapi/"*.h "$COMMON_KERNEL_FOLDER/include/uapi/" 2>/dev/null || true
         fi
-        if [ -d "$KSU_KDIR" ]; then
+        if [ "${SUSFS_ON:-false}" != true ] && [ -d "$KSU_KDIR" ]; then
           _nm_inject() {  # $1 = full extern decl text ; $2 = symbol to grep for (whole word)
             while IFS= read -r _f; do
               grep -qF "$1" "$_f" || sed -i "1i $1" "$_f"
@@ -936,6 +979,7 @@ runs:
             sed -i '1i #include <linux/types.h>' "$_f"
           done < <(grep -rlwE 'allow_shell|ksu_late_loaded|ksu_no_custom_rc' "$KSU_KDIR" --include='*.c' 2>/dev/null || true)
           echo "Injected KSU externs (ksu_cred / allow_shell / ksu_late_loaded / ksu_no_custom_rc) + types.h"
+        fi
         fi
 
         cd "$KERNEL_PLATFORM_FOLDER/KernelSU"
@@ -1024,6 +1068,18 @@ runs:
       run: |
         set -euo pipefail
         bash "$BOUTEILLE_KERNEL_PATCHES_FOLDER/scripts/apply_nomount_stack.sh" verify
+
+    - name: Apply SUSFS
+      if: ${{ env.SUSFS_ON == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "::group::Apply SUSFS"
+        bash "$GITHUB_WORKSPACE/.github/scripts/apply_susfs.sh"
+        if [ "${{ env.OP_NMS }}" = true ]; then
+          bash "$BOUTEILLE_KERNEL_PATCHES_FOLDER/scripts/apply_nomount_stack.sh" verify
+        fi
+        echo "::endgroup::"
 
     - name: Add BBG
       if: ${{ env.OP_BBG == 'true' }}
@@ -1482,6 +1538,7 @@ runs:
         echo "kernel_version=${{ env.KERNEL_FULL_VER }}" >> "$GITHUB_OUTPUT"
         echo "ksu_version=${KSUVER:-unknown}" >> "$GITHUB_OUTPUT"
         echo "ksu_type=${{ inputs.ksu_type }}" >> "$GITHUB_OUTPUT"
+        echo "susfs_version=${SUSVER:-}" >> "$GITHUB_OUTPUT"
         echo "build_timestamp=${EFFECTIVE_BUILD_TIMESTAMP:-unknown}" >> "$GITHUB_OUTPUT"
 
     - name: 🫥 Report a stock config at /proc/config.gz
@@ -2161,145 +2218,6 @@ runs:
         echo "   - Build time: ${BUILD_TIME}s"
         echo "::endgroup::"
 
-    - name: Build susfs_guard_lkm.ko
-      id: build_susfs_lkm
-      if: inputs.susfs_lkm_ref != ''
-      shell: bash
-      run: |
-        set -euo pipefail
-        echo "::group::Build susfs_guard_lkm.ko against this kernel"
-
-        # The module is optional; the kernel is not.  A composite action cannot carry
-        # continue-on-error per step, so every bail below goes through this: it annotates
-        # loudly, records why for the summary, and exits 0 so the Image still ships.
-        susfs_bail() {
-          echo "::error::susfs_guard_lkm.ko NOT produced - $1"
-          echo "SUSFS_KO_STATUS=failed: $1" >> "$GITHUB_ENV"
-          echo "::endgroup::"
-          exit 0
-        }
-
-        OUT="$COMMON_KERNEL_FOLDER/out"
-
-        # A normal (debug=false) build runs `make Image` only, so it stops after
-        # `MODPOST vmlinux.symvers` and never writes Module.symvers - that one is a
-        # `make modules` artifact.  vmlinux.symvers already lists every EXPORT_SYMBOL of
-        # this vmlinux with its CRC, module_layout included, which is precisely what an
-        # out-of-tree modpost reads, so seed it rather than forcing a modules build.
-        if [ ! -f "$OUT/Module.symvers" ] && [ -f "$OUT/vmlinux.symvers" ]; then
-          cp "$OUT/vmlinux.symvers" "$OUT/Module.symvers"
-          echo "seeded Module.symvers from vmlinux.symvers ($(wc -l < "$OUT/Module.symvers") symbols)"
-        fi
-        if [ ! -f "$OUT/Module.symvers" ]; then
-          susfs_bail "neither Module.symvers nor vmlinux.symvers exists in $OUT - without kernel symbol CRCs the .ko gets no __versions and a CONFIG_MODVERSIONS kernel refuses it"
-        fi
-        if ! grep -q "	module_layout	" "$OUT/Module.symvers"; then
-          susfs_bail "module_layout has no CRC in $OUT/Module.symvers - that is the one symbol check_modstruct_version() looks up, so the load would fail"
-        fi
-
-        # Same reason as Module.symvers: `make Image` never needs scripts/module.lds, so it
-        # is absent and modfinal cannot link any .ko - it fails with the misleading
-        # "No rule to make target ... .ko, needed by __modfinal".  modules_prepare is the
-        # target that emits it; asking for scripts/module.lds directly does not work with O=.
-        if [ ! -f "$OUT/scripts/module.lds" ]; then
-          make -C "$COMMON_KERNEL_FOLDER" \
-            LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" \
-            O="$OUT" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1 modules_prepare
-          echo "generated $OUT/scripts/module.lds via modules_prepare"
-        fi
-
-        SUSFS_SRC="$GITHUB_WORKSPACE/susfs4ksu-lkm"
-        rm -rf "$SUSFS_SRC"
-        git clone --depth 1 -b "${{ inputs.susfs_lkm_ref }}" \
-          https://github.com/Bouteillepleine/susfs4ksu-lkm.git "$SUSFS_SRC"
-        echo "susfs source: $(git -C "$SUSFS_SRC" log --oneline -1)"
-
-        export ARCH=arm64 SUBARCH=arm64
-        export LLVM=1 LLVM_IAS=1
-        # CROSS_COMPILE matters on 5.10 and nowhere else: that Makefile builds clang's
-        # --target from it, so without it clang compiles arm64 headers for the HOST and
-        # every atomic_lse.h asm dies with "unknown register name 'x0'". 5.15 and newer
-        # derive the target from ARCH, which is why only android12-5.10 failed. Same
-        # value the kernel's own build exports.
-        export CROSS_COMPILE=aarch64-linux-gnu-
-
-        # KBUILD_MODPOST_WARN=1 is REQUIRED, not a shortcut: the module deliberately
-        # references unexported symbols (kallsyms_lookup_name, init_mm, saved_boot_config,
-        # task_work_add, ...) which its userspace loader rewrites to absolute addresses
-        # before init_module(2).  modpost treats those as errors by default.  Downgrading
-        # them does NOT cost the CRCs - modpost still emits __versions entries for every
-        # symbol it CAN resolve from Module.symvers, module_layout included, which is what
-        # this kernel's check_modstruct_version() looks up.
-        # The compile is the likeliest thing to fail on a kernel the module has never been
-        # built against. Measured across a full A16 matrix: every android12-5.10 device
-        # fails here with "unknown register name 'x0' in asm" through atomic_lse.h - the
-        # module build is not targeting aarch64 on those trees - while 5.15, 6.1, 6.6 and
-        # 6.12 all build clean. Everything AFTER make was guarded and make itself was not,
-        # so one unbuildable device failed its whole kernel and blocked the release.
-        # Guard it too: the Image still ships, just without the module.
-        if ! make -C "$COMMON_KERNEL_FOLDER" \
-             LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" \
-             O="$OUT" M="$SUSFS_SRC/kernel" \
-             KBUILD_MODPOST_WARN=1 \
-             -j"$(nproc --all)" modules 2>&1 | tee "$GITHUB_WORKSPACE/susfs-build.log" | tail -n 40; then
-          susfs_bail "the module did not compile against this kernel - see susfs-build.log"
-        fi
-
-        KO="$SUSFS_SRC/kernel/susfs_guard_lkm.ko"
-        if [ ! -f "$KO" ]; then
-          susfs_bail "susfs_guard_lkm.ko was not produced"
-        fi
-
-        echo "--- modinfo ---"
-        modinfo "$KO" 2>/dev/null | grep -E "vermagic|name|description|import_ns" || true
-        # (1) Everything else proves the module is LOADABLE; nothing proved it belongs to
-        # THIS kernel.  Three builders emit the same release string with different struct
-        # layouts, so compare against the release this build itself produced.
-        REL_FILE="$OUT/include/config/kernel.release"
-        [ -f "$REL_FILE" ] || susfs_bail "$REL_FILE is missing, so the module cannot be proven to match this kernel"
-        KREL=$(tr -d ' \r\n' < "$REL_FILE")
-        KOVM=$(modinfo "$KO" 2>/dev/null | sed -n 's/^vermagic: *//p' | awk '{print $1}')
-        [ -n "$KOVM" ] || susfs_bail "the module carries no vermagic"
-        [ "$KOVM" = "$KREL" ] || susfs_bail "vermagic mismatch - module says '$KOVM', this kernel is '$KREL'"
-        echo "--- vermagic matches this kernel: $KREL ---"
-
-        echo "--- version sections (must be present, or a MODVERSIONS kernel refuses the load) ---"
-        readelf -SW "$KO" | awk '/__versions|__version_ext/ {print "  "$2" size="$6}'
-        VERS=$(readelf -SW "$KO" | grep -c "__versions" || true)
-        if [ "${VERS:-0}" = "0" ]; then
-          susfs_bail "no __versions section - check_modstruct_version() will take the try_to_force_load() path and this kernel has CONFIG_MODULE_FORCE_LOAD off, so the load would be refused with -ENOEXEC"
-        fi
-        echo "--- module_layout CRC present? ---"
-        if readelf -p __versions "$KO" 2>/dev/null | grep -q module_layout; then
-          echo "  yes - classic __versions carries module_layout"
-        else
-          echo "  not in classic __versions (extended modversions path will be used)"
-        fi
-        echo "--- undefined symbols the loader must absolutize ---"
-        nm -u "$KO" | wc -l
-
-        # NOT $ARTIFACTS_FOLDER: "Create Kernel ZIP" runs
-        #   find "$ARTIFACTS_FOLDER" -maxdepth 1 -type f ! -name "$ZIP_NAME" -delete
-        # which sweeps anything that is not the AK3 zip, so a .ko staged there is gone
-        # before the upload step sees it.  Use a directory of our own.
-        SUSFS_OUT="$GITHUB_WORKSPACE/susfs-ko"
-        mkdir -p "$SUSFS_OUT"
-        cp "$KO" "$SUSFS_OUT/susfs_guard_lkm-${OP_MODEL}-${OP_ANDROID_VERSION}-${OP_KERNEL_VERSION}.ko"
-        echo "SUSFS_KO_DIR=$SUSFS_OUT" >> "$GITHUB_ENV"
-        echo "SUSFS_KO_NAME=susfs_guard_lkm-${OP_MODEL}-${OP_ANDROID_VERSION}-${OP_KERNEL_VERSION}.ko" >> "$GITHUB_ENV"
-
-        # The module rides inside the AK3 zip of the kernel it was built against, so the
-        # two cannot be separated or mispaired. anykernel.sh copies it out to storage on
-        # flash (best-effort), and the autoloader adopts it from there - or straight out
-        # of the zip when /data was not writable at flash time.
-        cp "$KO" "$AK3_FOLDER/susfs_guard_lkm.ko"
-        echo "bundled susfs_guard_lkm.ko into the AK3 zip"
-        (cd "$SUSFS_OUT" && sha256sum ./* > sha256sums.txt)
-        echo "SUSFS_KO_STATUS=ok ($KREL)" >> "$GITHUB_ENV"
-        echo "--- shipped ---"; ls -l "$SUSFS_OUT" | sed 's/^/  /'
-        echo "✅ built against this kernel and bundled into the AK3 zip"
-        echo "::endgroup::"
-
     - name: Create Kernel ZIP
       id: create_zip
       shell: bash
@@ -2329,7 +2247,7 @@ runs:
         
         
         ZIP_MODEL=$(echo "$OP_MODEL" | sed 's/-[0-9]\+\.[0-9]\+\.[0-9]\+$//')
-        ZIP_NAME="AK3_${ZIP_MODEL}_${OP_OS_VERSION}_${KERNEL_FULL_VER}_${{ inputs.ksu_type }}_${KSUVER:-unknown}.zip"
+        ZIP_NAME="AK3_${ZIP_MODEL}_${OP_OS_VERSION}_${KERNEL_FULL_VER}_${{ inputs.ksu_type }}_${KSUVER:-unknown}${SUSVER:+_SuSFS_$SUSVER}.zip"
         mkdir -p "$ARTIFACTS_FOLDER"
         
         echo "Creating flashable ZIP: $ZIP_NAME"
@@ -2381,6 +2299,10 @@ runs:
           if [ "${{ env.OP_NMS }}" = true ]; then
             echo "NoMount Version: ${NMVER:-unknown}"
           fi
+          if [ "${{ env.SUSFS_ON }}" = true ]; then
+            echo "SUSFS Version: ${SUSVER:-unknown}"
+            echo "SUSFS commit SHA: ${SUSFS_COMMIT_SHA:-unknown}"
+          fi
           echo "Optimization: ${{ inputs.optimize_level }}"
           echo "Clean Build: ${{ inputs.clean }}"
           echo ""
@@ -2414,6 +2336,7 @@ runs:
         SUM_HEAD="🎯 <b>${{ env.OP_MODEL }}</b> — ${{ steps.save_metadata.outputs.kernel_version }}"
         SUM_HEAD="${SUM_HEAD} · ⚡SukiSU ${KSUVER:-?}"
         if [ "${{ env.OP_NMS }}" = true ]; then SUM_HEAD="${SUM_HEAD} · NoMount ${NMVER:-?}"; fi
+        if [ "${{ env.SUSFS_ON }}" = true ]; then SUM_HEAD="${SUM_HEAD} · SUSFS ${SUSVER:-?}"; fi
         SUM_HEAD="${SUM_HEAD} · ⏱ ${{ steps.collect_stats.outputs.build_time }}s"
         if [ "${{ steps.collect_stats.outputs.warnings_count }}" != "0" ]; then
           SUM_HEAD="${SUM_HEAD} · ⚠️ ${{ steps.collect_stats.outputs.warnings_count }}"
@@ -2443,6 +2366,10 @@ runs:
           
           if [ "${{ env.OP_NMS }}" = true ]; then
             echo "| **NoMount Version** | ${NMVER:-unknown} |"
+          fi
+          if [ "${{ env.SUSFS_ON }}" = true ]; then
+            echo "| **SUSFS Version** | ${SUSVER:-unknown} |"
+            echo "| **SUSFS Commit** | [\`${SUSFS_COMMIT_SHA:0:8}\`](https://gitlab.com/simonpunk/susfs4ksu/-/commit/${SUSFS_COMMIT_SHA}) |"
           fi
           
           echo ""
@@ -2513,20 +2440,6 @@ runs:
         archive: false
         compression-level: 0
         retention-days: 90
-
-    # The step now exits 0 even when it bails, so its conclusion is always 'success' and
-    # cannot gate this.  SUSFS_KO_NAME is written only on the success path, so its
-    # presence is the real signal.
-    - name: Upload susfs_guard_lkm.ko
-      if: env.SUSFS_KO_NAME != ''
-      uses: actions/upload-artifact@v7
-      with:
-        name: ${{ env.SUSFS_KO_NAME }}
-        path: ${{ env.SUSFS_KO_DIR }}/${{ env.SUSFS_KO_NAME }}
-        archive: false
-        compression-level: 0
-        retention-days: 90
-        if-no-files-found: error
 
 
     - name: Upload ccache log

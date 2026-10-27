@@ -166,25 +166,53 @@ def insert_rollup_bypass(tree):
     if not span:
         return None
     a, b = span
-    body = s[a:b]
-    if 'bypass_orig_flow' in body:
+    lines = s[a:b].split('\n')
+    if any('bypass_orig_flow' in l for l in lines):
         return 'already present'
-    loop = '\n\tdo {\n'
-    gather = '\n\t\tsmap_gather_stats(vma, &mss, 0);\n'
-    i = body.find(loop)
-    if i < 0 or body.find(loop, i + 1) >= 0:
+    heads = [i for i, l in enumerate(lines) if l in ('\tdo {', '\tfor (vma = priv->mm->mmap; vma;) {')]
+    if len(heads) != 1:
         return None
-    j = body.find(gather, i)
-    if j < 0 or body.find(gather, j + 1) >= 0:
+    h = heads[0]
+    g = next((i for i in range(h + 1, min(h + 14, len(lines)))
+              if re.match(r'^\t+smap_gather_stats\(vma, &mss, 0\);$', lines[i])), None)
+    if g is None:
         return None
-    k = j + len(gather)
-    body = body[:k] + GUARD_MAP + '\nbypass_orig_flow:\n' + ENDIF_MAP + '\n' + body[k:]
-    i += len(loop)
-    body = (body[:i] + GUARD_MAP + '\n'
-            '\t\tif (vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))\n'
-            '\t\t\tgoto bypass_orig_flow;\n' + ENDIF_MAP + '\n' + body[i:])
-    write(path, s[:a] + body + s[b:])
+    label = [GUARD_MAP, 'bypass_orig_flow:', ENDIF_MAP]
+    guard = [GUARD_MAP,
+             '\t\tif (vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))',
+             '\t\t\tgoto bypass_orig_flow;',
+             ENDIF_MAP]
+    lines = lines[:g + 1] + label + lines[g + 1:]
+    lines = lines[:h + 1] + guard + lines[h + 1:]
+    write(path, s[:a] + '\n'.join(lines) + s[b:])
     return 'inserted at the show_smaps_rollup() loop head'
+
+
+def insert_top_declarations(tree, path, hunk):
+    runs = added_runs(hunk)
+    if not runs or has_deletions(hunk):
+        return None
+    for r in runs:
+        for l in r.split('\n'):
+            if l.strip() and not re.match(r'^(#|extern |/\*|\s*\*|//)', l):
+                return None
+    fpath = tree + '/' + path
+    text = read(fpath)
+    if all(r in text for r in runs):
+        return 'already present'
+    lines = text.split('\n')
+    last = None
+    for i, l in enumerate(lines):
+        if l.startswith('#include'):
+            last = i
+        elif re.match(r'^[A-Za-z_]', l) and not l.startswith('extern '):
+            break
+    if last is None:
+        return None
+    block = '\n'.join(runs)
+    lines = lines[:last + 1] + [block] + lines[last + 1:]
+    write(fpath, '\n'.join(lines))
+    return 'declarations placed after the last #include (line %d)' % (last + 1)
 
 
 RULES = [
@@ -196,6 +224,31 @@ RULES = [
 ]
 
 WINDOW = 80
+
+
+def walk_from(lines, body, start):
+    out, i, pending = lines[:start], start, []
+    for l in body:
+        if l.startswith('+'):
+            pending.append(l[1:])
+            continue
+        if l.startswith('-'):
+            if i >= len(lines) or lines[i].strip():
+                return None, lines[i] if i < len(lines) else '<eof>'
+            i += 1
+            continue
+        c = l[1:] if l.startswith(' ') else l
+        if pending:
+            out.extend(pending)
+            pending = []
+        j = next((k for k in range(i, min(i + WINDOW, len(lines))) if lines[k] == c), None)
+        if j is None:
+            return None, c
+        out.extend(lines[i:j + 1])
+        i = j + 1
+    out.extend(pending)
+    out.extend(lines[i:])
+    return out, None
 
 
 def reapply_additive(tree, path, hunk):
@@ -213,41 +266,33 @@ def reapply_additive(tree, path, hunk):
         return None
     old_start = int(re.match(r'@@ -(\d+)', hunk[0]).group(1)) - 1
     k = next((n for n, c in enumerate(ctx) if len(c.strip()) >= 8), 0)
-    cands = [i for i, l in enumerate(lines) if l == ctx[k]]
+    cands = sorted((i for i, l in enumerate(lines) if l == ctx[k]), key=lambda i: abs(i - (old_start + k)))
     if not cands:
+        print('   context miss: %s anchor: %r' % (path, ctx[k]))
         return None
-    cur = min(cands, key=lambda i: abs(i - (old_start + k)))
-    for c in reversed(ctx[:k]):
-        j = next((m for m in range(cur - 1, max(cur - WINDOW, -1), -1) if lines[m] == c), None)
-        if j is None:
-            return None
-        cur = j
-    out, i, pending = lines[:cur], cur, []
-    for l in body:
-        if l.startswith('+'):
-            pending.append(l[1:])
+    miss = None
+    for cand in cands:
+        cur = cand
+        for c in reversed(ctx[:k]):
+            j = next((m for m in range(cur - 1, max(cur - WINDOW, -1), -1) if lines[m] == c), None)
+            if j is None:
+                cur = None
+                break
+            cur = j
+        if cur is None:
+            miss = miss or ctx[0]
             continue
-        if l.startswith('-'):
-            if i >= len(lines) or lines[i].strip():
-                return None
-            i += 1
+        out, miss_line = walk_from(lines, body, cur)
+        if out is None:
+            miss = miss or miss_line
             continue
-        c = l[1:] if l.startswith(' ') else l
-        if pending:
-            out.extend(pending)
-            pending = []
-        j = next((k for k in range(i, min(i + WINDOW, len(lines))) if lines[k] == c), None)
-        if j is None:
-            return None
-        out.extend(lines[i:j + 1])
-        i = j + 1
-    out.extend(pending)
-    out.extend(lines[i:])
-    new = '\n'.join(out)
-    if not all(r in new for r in runs):
-        return None
-    write(fpath, new)
-    return 'additions re-applied in context order from line %d' % (cur + 1)
+        new = '\n'.join(out)
+        if not all(r in new for r in runs):
+            continue
+        write(fpath, new)
+        return 'additions re-applied in context order from line %d' % (cur + 1)
+    print('   context miss: %s near line %d: %r' % (path, cands[0] + 1, miss))
+    return None
 
 
 def main():
@@ -290,6 +335,8 @@ def main():
                         break
             if note is None:
                 note = reapply_additive(tree, path, hunk)
+            if note is None:
+                note = insert_top_declarations(tree, path, hunk)
             if note is None:
                 why = 'has deletions, cannot be re-applied' if has_deletions(hunk) else 'its context was not found in the tree'
                 failed.append('%s hunk #%d: %s' % (path, idx, why))

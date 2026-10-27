@@ -980,7 +980,6 @@ runs:
           done < <(grep -rlwE 'allow_shell|ksu_late_loaded|ksu_no_custom_rc' "$KSU_KDIR" --include='*.c' 2>/dev/null || true)
           echo "Injected KSU externs (ksu_cred / allow_shell / ksu_late_loaded / ksu_no_custom_rc) + types.h"
         fi
-        fi
 
         cd "$KERNEL_PLATFORM_FOLDER/KernelSU"
 

@@ -106,7 +106,7 @@ configs/
    - the **kernel** ZIP matching your exact device / OS / kernel base, and
    - the **`00_NoMount-Module-vX.Y.Z.zip`** add-on (top of the Assets list).
 2. **Flash the kernel** ZIP with **Kernel Flasher** (or **SukiSU Manager**).
-3. **Install the SukiSU Manager APK.** Use the version shown as `SukiSU Version` in the release notes.
+3. **Install the SukiSU Manager APK** attached to the release: `SukiSU_<build>_normal.apk` or `SukiSU_<build>_spoofed.apk`, one of the two.
 4. **Add NoMount Suite:** SukiSU Manager → **Modules → Install from storage** → select `00_NoMount-Module-…zip`.
    > Already have a metamodule? Remove it and reboot **first**: only one metamodule can be active at a time.
 5. **Reboot.**

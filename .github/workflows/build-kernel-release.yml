@@ -460,8 +460,8 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.set-op-model.outputs.matrix) }}
     outputs:
-      ksun_ver: ${{ steps.build-stat.outputs.ksu_version }}
-      ksu_ver: ${{ steps.build-stat.outputs.ksu_version }}
+      ksun_ver: ${{ steps.build-stat.outputs.ksu_ver }}
+      ksu_ver: ${{ steps.build-stat.outputs.ksu_ver }}
     env:
       OP_TOTAL_DEVICES: ${{ needs.set-op-model.outputs.device_count }}
     steps:
@@ -859,6 +859,22 @@ jobs:
             echo "MOD_MIRRORED=$MOD_MIRRORED"
           } >> "$GITHUB_ENV"
 
+      - name: 📥 Fetch the SukiSU manager APKs
+        shell: bash
+        env:
+          UPSTREAM: SukiSU-Ultra/SukiSU-Ultra
+          OUT_DIR: managers
+          KSU_REF: ${{ fromJSON(needs.set-op-model.outputs.ksu_options_normalized)[0].hash }}
+        run: |
+          set -euo pipefail
+          DRIVER_VER="$(for z in downloaded-artifacts/AK3_*.zip; do n="$(basename "$z" .zip)"; IFS=_ read -ra p <<< "${n#AK3_}"; echo "${p[4]:-}"; done | sort -u)"
+          if ! [[ "$DRIVER_VER" =~ ^[0-9]+$ ]]; then
+            echo "::warning::the AK3 zips do not agree on one driver build ($(echo $DRIVER_VER | tr '\n' ' ')); not attaching a manager"
+            exit 0
+          fi
+          export DRIVER_VER
+          bash .github/scripts/fetch_manager.sh
+
       - name: 🔐 Generate Checksums
         shell: bash
         run: |
@@ -873,6 +889,9 @@ jobs:
           cd downloaded-artifacts
           sha256sum *.zip | sort -k2 > ../00_CHECKSUMS.txt
           cd ..
+          if compgen -G "managers/*.apk" > /dev/null; then
+            (cd managers && sha256sum *.apk) >> 00_CHECKSUMS.txt
+          fi
 
           echo "Generated 00_CHECKSUMS.txt:"
           cat 00_CHECKSUMS.txt
@@ -1010,16 +1029,17 @@ jobs:
 
           ---
 
-          ## 🧩 This release is **two** things
+          ## 🧩 This release is **three** things
 
           | | Download | Where it's from | How to install |
           |---|---|---|---|
           | 1️⃣ **Kernel** | \`AK3_<device>_…zip\` (pick yours below) | built by this repo's CI | Kernel Flasher / SukiSU Manager |
-          | 2️⃣ **NoMount Suite** | \`$MOD_ASSET\` | the separate [NoMount project](${{ github.server_url }}/${MOD_REPO}/releases/latest) | SukiSU Manager → Modules → Install from storage |
+          | 2️⃣ **SukiSU Manager** | \`SukiSU_<build>_normal.apk\` or \`_spoofed.apk\` | upstream release, fetched at release time | install **one** - see *Manager Applications* |
+          | 3️⃣ **NoMount Suite** | \`$MOD_ASSET\` | the separate [NoMount project](${{ github.server_url }}/${MOD_REPO}/releases/latest) | SukiSU Manager → Modules → Install from storage |
 
           > The kernel has NoMount **compiled in but dormant** — the **NoMount Suite module activates it**. You need both.
 
-          ## 🔴 REQUIRED — Step 2: install NoMount Suite
+          ## 🔴 REQUIRED — Step 3: install NoMount Suite
 
           After flashing the kernel and rebooting:
 
@@ -1211,9 +1231,19 @@ jobs:
           
           ### Official Manager
           EOF
+          if [ -n "${MGR_BUILD:-}" ]; then
           cat << EOF >> release_notes.md
-          - **SukiSU Manager** — the \`SukiSU_*.apk\` **attached to this release**, taken from the [SukiSU-Ultra release](https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases) and paired with these kernels
-            → use the one in the **Assets** below, not a newer one from upstream
+          - **SukiSU Manager** build **${MGR_BUILD}**, taken from the upstream release [${MGR_TAG}](https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases/tag/${MGR_TAG})${MGR_NOTE}. Install **one**:
+            - \`${MGR_NORMAL}\`: the plain package
+          EOF
+          [ -z "${MGR_SPOOFED:-}" ] || echo "  - \`${MGR_SPOOFED}\`: the same app under a randomised package name, so a scan of installed packages does not find a known root manager" >> release_notes.md
+          echo "  Use the one attached here, not a newer one from upstream." >> release_notes.md
+          else
+          cat << EOF >> release_notes.md
+          - **SukiSU Manager**: not attached to this release, no upstream release pairs with driver ${ksu_ver_global}. Take it from the [SukiSU-Ultra releases](https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases).
+          EOF
+          fi
+          cat << EOF >> release_notes.md
           > ⚠️ **Do not let the manager update itself past this kernel.** The version number does not pin the uapi: a manager and a driver can both report the same version and still disagree, which the manager reports as *"Manager uapi version (N) and driver uapi version (M) mismatch"* and root management stops working. Install the APK attached here rather than the latest one upstream, and reflash a matching kernel before taking a newer manager.
           EOF
           cat << EOF >> release_notes.md
@@ -1279,6 +1309,12 @@ jobs:
               gh release upload "${{ env.NEW_TAG }}" "$file" --clobber
             fi
           done
+          for apk in ./managers/*.apk; do
+            if [ -f "$apk" ]; then
+              echo "Uploading $apk..."
+              gh release upload "${{ env.NEW_TAG }}" "$apk" --clobber
+            fi
+          done
           for meta in 00_CHECKSUMS.txt 00_DOWNLOADS.md; do
             if [ -f "$meta" ]; then
               echo "Uploading $meta..."
@@ -1301,7 +1337,7 @@ jobs:
           ### 📦 Assets
           EOF
           
-          for zip in ./downloaded-artifacts/*.zip; do
+          for zip in ./downloaded-artifacts/*.zip ./managers/*.apk; do
             if [ -f "$zip" ]; then
               name=$(basename "$zip")
               size=$(stat -c%s "$zip")

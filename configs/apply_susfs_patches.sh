@@ -1387,6 +1387,30 @@ fi
 # guarded, so this is a no-op on trees that already match.
 # =============================================================================
 
+fix_sukisu_preinit_close_fd() {
+  local target="$1"
+  [ -f "$target" ] || return 0
+
+  # SukiSU v4.2.1-r2 added kernel/preinit/preinit.c. Its own code calls the
+  # ksu_close_fd() wrapper -- a plain close(2), valid on every version -- but the
+  # susfs enable patch rewrites that into the raw close_fd(), which the kernel only
+  # grew in 5.11. On 5.10 that is an implicit declaration and -Werror kills the
+  # build. preinit.c does NOT reject, so no per-rejected-file fix can carry this:
+  # repair unconditionally and assert, so the day susfs stops rewriting the call
+  # this has nothing to do. v4.2.1 ships no preinit.c, so it returns early there.
+  # The pattern anchors on leading whitespace, so an existing ksu_close_fd() call
+  # cannot match and cannot be doubled up.
+  if grep -qE '^[[:space:]]+close_fd\(' "$target"; then
+    echo "Restoring ksu_close_fd() in: $target"
+    sed -i -E 's/^([[:space:]]+)close_fd\(/\1ksu_close_fd(/' "$target"
+  fi
+
+  if grep -qE '^[[:space:]]+close_fd\(' "$target"; then
+    echo "::error::$target still calls the raw close_fd(), which does not exist before 5.11. The repair did not take."
+    exit 1
+  fi
+}
+
 normalize_sukisu_to_official_baseline() {
   local k="$1"
   [ -d "$k" ] || return 0
@@ -1578,6 +1602,7 @@ fix_sukisu_dispatch_c           "kernel/supercall/dispatch.c"
 fix_sukisu_sucompat_api         "kernel"
 fix_sukisu_forced_execveat_link_symbols "kernel"
 fix_sukisu_syscall_event_bridge "kernel/hook/syscall_event_bridge.c"
+fix_sukisu_preinit_close_fd     "kernel/preinit/preinit.c"
 fix_sukisu_linker_symbols
 
 # =============================================================================
@@ -1994,6 +2019,7 @@ fi
 fix_sukisu_dispatch_c           "drivers/kernelsu/supercall/dispatch.c"
 fix_sukisu_sucompat_api         "drivers/kernelsu"
 fix_sukisu_syscall_event_bridge "drivers/kernelsu/hook/syscall_event_bridge.c"
+fix_sukisu_preinit_close_fd     "drivers/kernelsu/preinit/preinit.c"
 fix_sukisu_linker_symbols
 
 # =============================================================================

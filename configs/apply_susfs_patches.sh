@@ -1509,6 +1509,15 @@ EXPECTED_SUKISU_REJECTS=(
   # v2.3.0: only hunk is pr_err/pr_info wording inside official's
   # ksu_install_fd_with_permissions(), a function SukiSU does not have.
   "kernel/supercall/supercall.c.rej"
+  # SukiSU v4.3.0 rewrote ksu_uid_should_umount() for RCU (#1016), moving the
+  # 'struct app_profile *profile; bool res;' declarations the susfs hunk anchors
+  # on into the #else branch, so its one hunk rejects. That hunk only DELETES
+  # SukiSU's 'never umount the manager' early return, and susfs does not need it
+  # gone: its own setresuid handler checks is_uid_manager() BEFORE it ever calls
+  # ksu_uid_should_umount(), so the manager never reaches the guard. Leaving the
+  # guard in is also the conservative direction -- it can only keep the manager
+  # from being umounted, never cause it.
+  "kernel/policy/allowlist.c.rej"
 )
 
 if [ -n "$(find . -name '*.rej' -print -quit)" ]; then

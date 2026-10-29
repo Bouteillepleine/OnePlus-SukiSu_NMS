@@ -1442,6 +1442,22 @@ fi
   if [ -f "$k/include/ksu.h" ] && ! grep -q 'extern bool ksu_bundled' "$k/include/ksu.h"; then
 sed -i 's|^extern bool allow_shell;|&\n#ifdef MODULE\nextern bool ksu_bundled;\n#endif|' "$k/include/ksu.h"
   fi
+
+  # SukiSU v4.2.1-r2 added feature/mount_hide.h between kernel_umount.h and
+  # ksu_handle_setresuid(), which lands inside the context the susfs setuid_hook
+  # hunk anchors on. The hunk then rejects, taking the zygote/umount handling the
+  # hook exists for with it. Include order is irrelevant in C, so hoist it above
+  # that window instead of editing either implementation: mount_hide stays wired
+  # and the hunk applies at an offset. ksu_handle_setresuid() is byte-identical
+  # between v4.2.1 and r2, so nothing is being merged here. Idempotent: once the
+  # include sits above manager_identity.h the test is false.
+  _mh=$(grep -n '^#include "feature/mount_hide.h"$' "$k/hook/setuid_hook.c" 2>/dev/null | head -1 | cut -d: -f1 || true)
+  _mi=$(grep -n '^#include "manager/manager_identity.h"$' "$k/hook/setuid_hook.c" 2>/dev/null | head -1 | cut -d: -f1 || true)
+  if [ -n "$_mh" ] && [ -n "$_mi" ] && [ "$_mh" -gt "$_mi" ]; then
+    sed -i '/^#include "feature\/mount_hide.h"$/d' "$k/hook/setuid_hook.c"
+    sed -i 's|^#include "manager/manager_identity.h"$|#include "feature/mount_hide.h"\n&|' "$k/hook/setuid_hook.c"
+    echo "  hoisted feature/mount_hide.h above the susfs setuid_hook anchor"
+  fi
 }
 
 # =============================================================================

@@ -45,7 +45,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       STATE_FILE: nms_canary_state.txt
-      KSU_OPTIONS: '[{"type":"SUKISU","hash":"v4.2.1"}]'
+      KSU_OPTIONS: '[{"type":"SUKISU","hash":"v4.2.1-r2"}]'
       CANARY_TARGET: ${{ github.event.inputs.canary_target || 'OP15-6.12.81' }}
     steps:
       - name: Collect upstream HEADs

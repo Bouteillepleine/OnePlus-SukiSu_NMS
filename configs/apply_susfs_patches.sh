@@ -1731,10 +1731,23 @@ sed -i '1i\#include <linux/types.h>\nextern bool allow_shell;' drivers/kernelsu/
   fi
 fi
 
-if grep -q "KERNEL_SU_VERSION" drivers/kernelsu/supercall/dispatch.c 2>/dev/null; then
-  grep -q "#define KERNEL_SU_VERSION" drivers/kernelsu/supercall/dispatch.c || \
-sed -i "1i\\#ifndef KERNEL_SU_VERSION\n#define KERNEL_SU_VERSION ${KSUVER:-40787}\n#endif" drivers/kernelsu/supercall/dispatch.c
-fi
+# KERNEL_SU_VERSION is ksu.h's "#define KERNEL_SU_VERSION KSU_VERSION", which only
+# resolves where Kbuild's -DKSU_VERSION reaches the translation unit. In this tree
+# it does not, so the value is injected into each consumer instead. This used to
+# name supercall/dispatch.c alone; SukiSU v4.3.0 added a second consumer,
+# extension/version_spoof.c (PR #1023), and compiling it failed with "use of
+# undeclared identifier 'KERNEL_SU_VERSION'". Scan for consumers rather than
+# listing them, so the next one upstream adds does not break the build. The guard
+# is #ifndef, so a file that already has the define is left alone and re-running
+# is a no-op.
+_ksuver_injected=0
+for _f in $(grep -rl "KERNEL_SU_VERSION" drivers/kernelsu --include='*.c' 2>/dev/null); do
+  grep -q "#define KERNEL_SU_VERSION" "$_f" && continue
+  sed -i "1i\\#ifndef KERNEL_SU_VERSION\n#define KERNEL_SU_VERSION ${KSUVER:-40787}\n#endif" "$_f"
+  echo "Injected KERNEL_SU_VERSION=${KSUVER:-40787} into: $_f"
+  _ksuver_injected=$((_ksuver_injected + 1))
+done
+echo "KERNEL_SU_VERSION consumers patched: $_ksuver_injected"
 
 if [ -f drivers/kernelsu/runtime/ksud.c ]; then
   grep -q "ksu_init_rc_hook_key_false" drivers/kernelsu/runtime/ksud.c || \

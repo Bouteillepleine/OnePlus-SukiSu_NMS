@@ -514,16 +514,21 @@ mv "$target.tmp" "$target"
 -e 's/\bksu_late_loaded\b/0/g' \
 "$target" || true
 
-  perl -0pi -e 's/if[ \t]*\([ \t]*security_dump_masked_av_fn[ \t]*\)/if (\&security_dump_masked_av_fn)/g' "$target" || true
-  perl -0pi -e 's/if[ \t]*\([ \t]*context_struct_compute_av_fn[ \t]*\)/if (\&context_struct_compute_av_fn)/g' "$target" || true
+  # Both symbols are function POINTERS filled in by find_kernel_symbol_exact(), so
+  # `if (fn)` is the correct "did kallsyms resolve it?" check and warns about nothing.
+  # Rewriting it to `if (&fn)` took the address of the pointer variable instead: the
+  # test is then always true, so a failed lookup calls through NULL rather than taking
+  # the fallback, and clang reports the tautology as -Wpointer-bool-conversion -- the
+  # very warning the rewrite was meant to remove. Assert the broken form is absent.
+  perl -0pi -e 's/if[ \t]*\([ \t]*&[ \t]*(security_dump_masked_av_fn|context_struct_compute_av_fn)[ \t]*\)/if ($1)/g' "$target" || true
 
   if grep -n 'ksu_late_loaded' "$target"; then
 echo "::error::ksu_late_loaded still remains in $target"
 exit 1
   fi
 
-  if grep -nE 'if[[:space:]]*\([[:space:]]*(security_dump_masked_av_fn|context_struct_compute_av_fn)[[:space:]]*\)' "$target"; then
-echo "::error::Pointer-bool warning patterns still remain in $target"
+  if grep -nE 'if[[:space:]]*\([[:space:]]*&[[:space:]]*(security_dump_masked_av_fn|context_struct_compute_av_fn)[[:space:]]*\)' "$target"; then
+echo "::error::address-of null check (always true) remains in $target"
 exit 1
   fi
 
@@ -2089,8 +2094,8 @@ echo "::error::Unused new_fn still exists in drivers/kernelsu/feature/selinux_hi
 exit 1
   fi
 
-  if grep -nE 'if[[:space:]]*\([[:space:]]*(security_dump_masked_av_fn|context_struct_compute_av_fn)[[:space:]]*\)' drivers/kernelsu/feature/selinux_hide.c; then
-echo "::error::Pointer-bool warning patterns still remain in drivers/kernelsu/feature/selinux_hide.c"
+  if grep -nE 'if[[:space:]]*\([[:space:]]*&[[:space:]]*(security_dump_masked_av_fn|context_struct_compute_av_fn)[[:space:]]*\)' drivers/kernelsu/feature/selinux_hide.c; then
+echo "::error::address-of null check (always true) remains in drivers/kernelsu/feature/selinux_hide.c"
 exit 1
   fi
 fi

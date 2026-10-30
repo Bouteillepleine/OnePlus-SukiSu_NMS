@@ -489,12 +489,19 @@ SELINUXEOF
   perl -0pi -e 's/^[ \t]*static[ \t]+(const[ \t]+)?struct[ \t]+selinux_state[ \t]+fake_state([ \t]*[=;])/${1}struct selinux_state fake_state$2/mg' "$target" || true
   perl -0pi -e 's/^[ \t]*static[ \t]+(const[ \t]+)?struct[ \t]+selinux_state[ \t]+\*fake_state([ \t]*[=;])/${1}struct selinux_state *fake_state$2/mg' "$target" || true
 
+  # backup_sepolicy is DEFINED in kernel/selinux/rules.c and assigned there by
+  # ksu_dup_sepolicy(); selinux_hide.c only uses it, taking the declaration from
+  # kernel/include/ksu.h. That header is not included here, so a `static`
+  # definition compiles without a redeclaration error and silently shadows the
+  # real global: it stays NULL, ksu_selinux_hide_enable() returns -EAGAIN,
+  # ksu_selinux_hide_running never becomes true, and the whole cloak is inert
+  # while the manager reports it enabled. Declare, do not define.
   if grep -q "backup_sepolicy" "$target" && ! grep -q "struct selinux_policy \*backup_sepolicy" "$target"; then
 awk '
   /^#include/ { print; last_include = NR; next }
   last_include && !inserted {
     print ""
-    print "static struct selinux_policy *backup_sepolicy;"
+    print "extern struct selinux_policy *backup_sepolicy;"
     print ""
     inserted = 1
   }
@@ -502,7 +509,7 @@ awk '
   END {
     if (!inserted) {
       print ""
-      print "static struct selinux_policy *backup_sepolicy;"
+      print "extern struct selinux_policy *backup_sepolicy;"
     }
   }
 ' "$target" > "$target.tmp"

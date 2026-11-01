@@ -2422,6 +2422,24 @@ if [ -n "$_KSU_KCONFIG" ]; then
     exit 1
   fi
   echo "✅ All SUSFS defconfig options are defined in $_KSU_KCONFIG"
+
+  # And the other direction, which is the one that bites quietly: an option this
+  # SUSFS version DEFINES but the block above never writes takes its own Kconfig
+  # default, with nothing to say so. KSU_SUSFS_PRIORITY_UID_FILTER (default y)
+  # was doing exactly that until it was pinned above -- the check above only ever
+  # looked at what we write, never at what exists. Ported from
+  # OnePlus-KsuNext_NMS, whose equivalent gate is what caught it.
+  _susfs_undecided="$(comm -13 \
+    <(grep -E '^CONFIG_KSU_SUSFS' "$_DEFCONFIG" | sed 's/^CONFIG_//; s/=.*//' | sort -u) \
+    <(grep -oE '^[[:space:]]*config[[:space:]]+KSU_SUSFS[A-Z_]*' "$_KSU_KCONFIG" \
+        | awk '{print $2}' | sort -u))"
+  if [ -n "$_susfs_undecided" ]; then
+    echo "::error::This SUSFS version defines options the builder never writes, so they would take their Kconfig default:"
+    echo "$_susfs_undecided" | sed 's/^/     /'
+    echo "::error::Add each one to the SUSFS defconfig block in apply_susfs_patches.sh with an explicit y or n."
+    exit 1
+  fi
+  echo "✅ Every SUSFS option this version defines has an explicit setting"
 else
   echo "::warning::Could not locate KSU Kconfig to verify SUSFS defconfig options"
 fi

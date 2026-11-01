@@ -1733,7 +1733,23 @@ echo "Applied MDIR-based KSU include-path fix (6.12+) to drivers/kernelsu/Kbuild
   fi
 fi
 
-ARCH_H="$(find "$KERNEL_PLATFORM_FOLDER/KernelSU" -name "arch.h" -type f 2>/dev/null | head -n 1 || true)"
+# The arch.h these copies exist to provide is the PT_REGS one. `find | head -n 1`
+# took whichever the filesystem happened to list first, and SukiSU carries three
+# arch.h -- one of them preinit/runner/nolibc/arch.h, which #includes
+# arch-arm64.h. When that one won, every drivers/kernelsu/*/arch.h became the
+# nolibc header and the build died on a missing arch-arm64.h. One job in 26 and
+# never the same one, because find order is directory-entry order. So choose by
+# CONTENT, and sort so that a tie is at least reproducible.
+ARCH_H=""
+while IFS= read -r _cand; do
+  [ -n "$_cand" ] || continue
+  if grep -q 'PT_REGS_PARM1' "$_cand"; then ARCH_H="$_cand"; break; fi
+done < <(find "$KERNEL_PLATFORM_FOLDER/KernelSU" -name "arch.h" -type f 2>/dev/null | sort)
+if [ -n "$ARCH_H" ]; then
+  echo "KSU arch.h: $ARCH_H"
+else
+  echo "::warning::no arch.h carrying PT_REGS_PARM1 found under KernelSU; not seeding drivers/kernelsu/*/arch.h"
+fi
 
 if [ -n "$ARCH_H" ]; then
   for dest in feature hook infra selinux supercall core runtime; do

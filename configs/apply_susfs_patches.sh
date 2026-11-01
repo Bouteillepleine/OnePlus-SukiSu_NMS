@@ -2379,6 +2379,28 @@ else
   echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=n" >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig"
 fi
 
+# SUSFS gained PRIORITY_UID_FILTER on 2026-11-01, upstream default y: it hides
+# user-defined uids from getpriority/setpriority/ioprio_get/ioprio_set for uid >=
+# 10000. NoMount already closes that oracle (uidconceal, plus the fgetpriority
+# LKM), so a second filter on the same four syscalls is duplicate coverage and is
+# pinned off rather than left to default silently -- which is what it was doing,
+# because the assert below only checks that what we WRITE exists, never that what
+# the Kconfig DEFINES is written.
+#
+# Conditional on the symbol existing: the assert fails the build on a symbol this
+# SUSFS version does not define, and refs older than v2.3.0 must keep building.
+for _k in "$KSU_FOLDER/kernel/Kconfig" "$COMMON_KERNEL_FOLDER/drivers/kernelsu/Kconfig"; do
+  [ -f "$_k" ] || continue
+  if grep -qE '^[[:space:]]*config[[:space:]]+KSU_SUSFS_PRIORITY_UID_FILTER([[:space:]]|$)' "$_k"; then
+    sed -i '/^CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER=/d' \
+      "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" || true
+    echo "CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER=n" \
+      >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig"
+    echo "SUSFS: PRIORITY_UID_FILTER pinned off (NoMount owns getpriority/ioprio)"
+  fi
+  break
+done
+
 # --- Assert every SUSFS defconfig symbol is real for this SUSFS version ---
 # Guards against susfs renaming/removing options between versions (would otherwise
 # be silently dropped by olddefconfig and the feature quietly never enabled).

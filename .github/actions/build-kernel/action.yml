@@ -1098,6 +1098,12 @@ runs:
         echo "::group::Apply SUSFS"
         bash "$GITHUB_WORKSPACE/.github/scripts/apply_susfs.sh"
         if [ "${{ env.OP_NMS }}" = true ]; then
+          # susfs owns kernel/selinux/rules.c last: its enable-patch reverts
+          # KernelSU's generation tracking and puts the policyload=0 tell back,
+          # so the _hook step deferred fix_selinux_seqno to here. The verify
+          # below is unconditional and asserts the tell is gone, so dropping
+          # this line fails the build rather than shipping the tell.
+          bash "$BOUTEILLE_KERNEL_PATCHES_FOLDER/scripts/apply_nomount_stack.sh" seqno
           bash "$BOUTEILLE_KERNEL_PATCHES_FOLDER/scripts/apply_nomount_stack.sh" verify
         fi
         echo "::endgroup::"

@@ -1530,18 +1530,6 @@ EXPECTED_SUKISU_REJECTS=(
   # guard in is also the conservative direction -- it can only keep the manager
   # from being umounted, never cause it.
   "kernel/policy/allowlist.c.rej"
-  # susfs 3b5162a ("KernelSU: Sync with upstream") added three kernel/selinux/
-  # rules.c hunks that undo upstream KernelSU #3746, converting
-  # reset_avc_cache(u32 seqno) back to reset_avc_cache() and dropping
-  # 'pol->latest_granting = old_pol->latest_granting + 1'. SukiSU never took
-  # #3746: its rules.c already reads reset_avc_cache() with avc_ss_reset(0), and
-  # it has no latest_granting assignment at all -- the only mention is a pr_info.
-  # So all three hunks are no-ops here, their post-image being what the tree
-  # already contains. They also cannot apply: NoMount's _hook/fix_selinux_seqno
-  # patch deletes the two selinux_status_update_policyload() calls that sit in
-  # their context, because a bumped policyload seqno in /sys/fs/selinux/status is
-  # itself a detection tell. Letting the hunks in would put those calls back.
-  "kernel/selinux/rules.c.rej"
 )
 
 if [ -n "$(find . -name '*.rej' -print -quit)" ]; then

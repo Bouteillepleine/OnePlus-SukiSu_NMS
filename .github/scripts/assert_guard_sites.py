@@ -16,6 +16,14 @@ is absent from the file is not checked here (dropping a hunk is a different
 failure, and some sites exist only on some kernel versions); a needle that is
 present and NOT inside its function fails the build, and so does a function we
 cannot locate, because an unverifiable site is a check that is not running.
+
+`ph_<name>` counts as `<name>`. NoMount's pathhide takes the real body of
+show_smap() and show_map() on 5.10/5.15/6.1 and renames it ph_show_smap() /
+ph_show_map(), leaving a thin wrapper under the original name that guards and
+then tail-calls it. susfs's guard belongs in the body, so that is where the
+surgery puts it, and asserting the literal name fails 12 of the 26 matrix
+targets on a tree that is in fact correct. 6.6 and 6.12 keep the single
+function, so both shapes have to pass.
 """
 import io
 import re
@@ -103,6 +111,18 @@ def definition_span(clean, name):
     return None
 
 
+def functions_containing(clean, raw, needle):
+    """Every function definition whose body holds `needle`. Only used to say
+    where a misplaced guard actually went -- a guess is worse than a list."""
+    out = []
+    for m in re.finditer(r'^[A-Za-z_][A-Za-z0-9_ \t*]*\b([a-z_][a-z0-9_]*)\s*\(',
+                         clean, re.M):
+        sp = definition_span(clean, m.group(1))
+        if sp and needle in raw[sp[0]:sp[1]] and m.group(1) not in out:
+            out.append(m.group(1))
+    return out
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
@@ -116,22 +136,22 @@ def main():
         if needle not in raw:
             continue
         clean = strip_noise(raw)
-        span = definition_span(clean, func)
-        if span is None:
+        names = [func, 'ph_' + func]
+        spans = [(n, definition_span(clean, n)) for n in names]
+        found = [(n, sp) for n, sp in spans if sp]
+        if not found:
             bad.append('%s: cannot locate %s(), so %r cannot be verified'
-                       % (path, func, needle))
+                       % (path, '() or '.join(names), needle))
             continue
-        a, b = span
         checked += 1
-        if needle in raw[a:b]:
-            print('   guard site: %s %s() carries %s' % (path, func, needle))
+        hit = next(((n, sp) for n, sp in found if needle in raw[sp[0]:sp[1]]), None)
+        if hit:
+            print('   guard site: %s %s() carries %s' % (path, hit[0], needle))
         else:
-            where = next((f for _p, f, _n in SITES
-                          if _p == path and definition_span(clean, f)
-                          and needle in raw[slice(*definition_span(clean, f))]), None)
-            bad.append('%s: %r is in the file but NOT inside %s()%s'
-                       % (path, needle, func,
-                          ' -- it is in %s()' % where if where else ''))
+            bad.append('%s: %r is in the file but in none of %s -- it is in %s'
+                       % (path, needle, ', '.join('%s()' % n for n, _ in found),
+                          ', '.join('%s()' % n for n in functions_containing(clean, raw, needle))
+                          or 'no function at all'))
     for line in bad:
         print('::error::apply_susfs: ' + line)
     if bad:

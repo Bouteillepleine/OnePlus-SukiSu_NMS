@@ -118,26 +118,49 @@ def function_span(s, name):
     return start, end + 1
 
 
-# A declaration at the top of a function body: a type, a name, maybe an
-# initialiser, no call. The parens exclusion is what separates
-# `struct mem_size_stats mss;` and `struct vm_area_struct *vma = v;` from the
-# first STATEMENT -- `memset(&mss, 0, sizeof(mss));` on 5.10-6.1,
-# `if (!vma_data_pages(vma))` on 6.6/6.12. Anchoring on the end of that block
-# rather than on the statement itself is what makes one rule fit all five
-# kernel versions: susfs puts its guard in the same place on every one of them,
-# and the statement it happens to precede is the part that moves.
+# A declaration at the top of a function body: one statement-terminated line
+# that opens with a TYPE. The type keyword is the whole discriminator -- no
+# statement can start with one, so `struct mem_size_stats mss;` and
+# `struct vm_area_struct *vma = get_data_vma(v);` match while the first real
+# statement does not, whether that is `memset(&mss, 0, sizeof(mss));` on
+# 5.10-6.1 or `if (!vma_data_pages(vma))` on 6.6/6.12. `\b` is what keeps
+# `long_running_call();` and `bool_check(x);` out.
+#
+# An earlier version forbade parens anywhere in the line, which read as "no
+# call" but actually excluded every declaration with a computed initialiser --
+# so OnePlus's 5.10/5.15 show_smap(), which opens with two get_*_vma(v) calls,
+# looked like it began with a statement and the rule declined on 5 of the 26
+# matrix targets. Anchoring on the end of the declaration block rather than on
+# the statement after it is what makes one rule fit all five kernel versions:
+# susfs puts its guard in the same place on every one of them, and the
+# statement it happens to precede is the part that moves.
 DECL_RE = re.compile(
     r'^[ \t]+(?:const\s+|volatile\s+|register\s+|static\s+)*'
     r'(?:struct|union|enum|unsigned|signed|char|short|int|long|float|double|bool|'
-    r'u8|u16|u32|u64|s8|s16|s32|s64|[A-Za-z_][A-Za-z0-9_]*_t)\b[^()]*;$')
+    r'void|u8|u16|u32|u64|s8|s16|s32|s64|[A-Za-z_][A-Za-z0-9_]*_t)\b[^;]*;$')
 
 
 def body_decl_end(lines):
-    """Index of the first line of a function body that is neither a top-of-body
-    declaration nor blank, i.e. where susfs's guard belongs."""
+    """Where susfs's guard belongs: (index, indent) of the first line of a
+    function body that is neither blank, nor a top-of-body declaration, nor the
+    preprocessor scaffolding around one. None when the body opens with a
+    statement, so the caller declines rather than guessing.
+
+    The preprocessor part is not cosmetic. OnePlus's 5.10/5.15/6.1 show_smap()
+    declares `char buf[256]` inside `#if defined(CONFIG_CONT_PTE_HUGEPAGE)`,
+    so stopping at the `#if` put the guard above a declaration -- statement
+    first, declaration after, on any tree that sets that config -- and took the
+    `#if` line's indent, which is none, so the guard came out flush left. Walk
+    through the scaffolding and take the indent from the declarations instead.
+    """
+    ind, seen = None, False
     for i, l in enumerate(lines):
-        if l.strip() and not DECL_RE.match(l):
-            return i
+        if not l.strip() or re.match(r'^[ \t]*#\s*(if|ifdef|ifndef|else|elif|endif)\b', l):
+            continue
+        if DECL_RE.match(l):
+            ind, seen = indent_of(l), True
+            continue
+        return (i, ind if ind is not None else indent_of(l)) if seen else None
     return None
 
 
@@ -173,17 +196,23 @@ def insert_memory_include(tree):
 def insert_show_smap_guard(tree):
     path = tree + '/fs/proc/task_mmu.c'
     s = read(path)
-    span = function_span(s, 'show_smap')
+    # ph_show_smap() first: NoMount's pathhide renames the real body to that on
+    # 5.10/5.15/6.1 and leaves a guard-and-tail-call wrapper under the original
+    # name. susfs's guard belongs in the body. Taking show_smap() there would
+    # find a wrapper whose first line is already a statement, so the rule
+    # declined and the context walk placed the guard instead -- correctly, but
+    # on 12 of the 26 matrix targets and without saying which function it chose.
+    span = function_span(s, 'ph_show_smap') or function_span(s, 'show_smap')
     if not span:
         return None
     a, b = span
     lines = s[a:b].split('\n')
     if any('SUSFS_IS_INODE_SUS_MAP' in l for l in lines):
         return 'already present'
-    i = body_decl_end(lines)
-    if i is None or i == 0:
+    at = body_decl_end(lines)
+    if at is None:
         return None
-    ind = indent_of(lines[i])
+    i, ind = at
     block = ([] if not lines[i - 1].strip() else ['']) + [
              GUARD_MAP,
              ind + 'if (vma->vm_file) {',
@@ -194,7 +223,8 @@ def insert_show_smap_guard(tree):
              '']
     lines = lines[:i] + block + lines[i:]
     write(path, s[:a] + '\n'.join(lines) + s[b:])
-    return 'inserted after the declarations of show_smap()'
+    return 'inserted after the declarations of %s()' % (
+        'ph_show_smap' if function_span(s, 'ph_show_smap') else 'show_smap')
 
 
 def insert_map_files_readdir_skip(tree):
@@ -466,7 +496,14 @@ def main():
             # A named rule that no longer fits is a defect in the rule, and the
             # walk silently covering for it is how it stays hidden: the show_smap
             # rule missed on 12 of 26 jobs and nothing said so.
-            if note is not None and missed and how != 'rule':
+            #
+            # Only a fall to [walk] is worth saying. [decl] is not a weaker
+            # mechanism -- insert_exec_include is a specialisation of it, and an
+            # include has one correct home either way -- and a code-placement
+            # hunk can never reach [decl], since it only accepts hunks whose
+            # every added line is a directive, extern or comment. Warning on
+            # that fired on every 6.6 build for an outcome that was right.
+            if note is not None and missed and how == 'walk':
                 print('::warning::susfs surgery: %s hunk #%d fell back to %s because '
                       '%s no longer fits this tree' % (path, idx, how, ', '.join(missed)))
             if note is None:

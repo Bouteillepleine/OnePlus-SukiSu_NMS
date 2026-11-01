@@ -29,6 +29,7 @@ on:
         type: choice
         options:
           - A16
+          - patch-matrix
           - android16-6.12
           - android15-6.6
           - android14-6.1
@@ -152,6 +153,23 @@ jobs:
           case "$input" in
             A16)
               jq_filter="map(select(.os_version == \"A16\"))"
+              ;;
+            patch-matrix)
+              # Smallest run that still proves the SUSFS and SukiSU surgery applies:
+              # every 6.12 tree, where the churn is, plus one device for each other
+              # SoC family within each KMI. apply_susfs.sh picks its patch per KMI
+              # (50_add_susfs_in_gki-<av>-<kv>.patch) so one device per KMI covers
+              # the patch files, but every config has its own manifest and a hunk
+              # can reject on one vendor tree and land on another -- hence per SoC.
+              # Grouping beats a model list: op_target_model matches by prefix, so
+              # a list would silently pull OP-ACE-2-PRO in behind OP-ACE-2.
+              jq_filter='map(select(.os_version == "A16"))
+                | (map(select(.kernel_version == "6.12"))
+                   + (map(select(.kernel_version != "6.12"))
+                      | group_by(.android_version + "-" + .kernel_version + "/" + .soc)
+                      | map(sort_by(.model) | .[0])))'
+
+              echo "ℹ️  Patch-validation matrix: every 6.12 target plus one per KMI/SoC"
               ;;
             android*-*.*)
               IFS='-' read -r av kv <<< "$input"

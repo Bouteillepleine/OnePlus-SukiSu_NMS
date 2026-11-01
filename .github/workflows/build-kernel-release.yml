@@ -865,10 +865,6 @@ jobs:
           UPSTREAM: SukiSU-Ultra/SukiSU-Ultra
           OUT_DIR: managers
           KSU_REF: ${{ fromJSON(needs.set-op-model.outputs.ksu_options_normalized)[0].hash }}
-          KSU_SHA: ${{ needs.set-op-model.outputs.ksu_resolved_hash }}
-          # Optional: a token with actions:read on SukiSU-Ultra, needed only to
-          # pull the spoofed manager of a branch build from its run artifact.
-          UPSTREAM_ARTIFACT_TOKEN: ${{ secrets.UPSTREAM_ARTIFACT_TOKEN }}
         run: |
           set -euo pipefail
           DRIVER_VER="$(for z in downloaded-artifacts/AK3_*.zip; do n="$(basename "$z" .zip)"; IFS=_ read -ra p <<< "${n#AK3_}"; echo "${p[4]:-}"; done | sort -u)"
@@ -1237,7 +1233,7 @@ jobs:
           EOF
           if [ -n "${MGR_BUILD:-}" ]; then
           cat << EOF >> release_notes.md
-          - **SukiSU Manager** build **${MGR_BUILD}**, taken from the upstream release [${MGR_TAG}](https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases/tag/${MGR_TAG})${MGR_NOTE}. Install **one**:
+          - **SukiSU Manager** build **${MGR_BUILD}**, taken from ${MGR_SOURCE}${MGR_NOTE}. Install **one**:
             - \`${MGR_NORMAL}\`: the plain package
           EOF
           [ -z "${MGR_SPOOFED:-}" ] || echo "  - \`${MGR_SPOOFED}\`: the same app under a randomised package name, so a scan of installed packages does not find a known root manager" >> release_notes.md

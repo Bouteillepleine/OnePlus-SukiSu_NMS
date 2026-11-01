@@ -41,10 +41,10 @@ on:
         type: string
         default: ''
       ksu_options:
-        description: 'Enter SukiSU build json. hash = any branch, tag or sha in SukiSU-Ultra/SukiSU-Ultra; with SUSFS on, configs/apply_susfs_patches.sh is validated against v4.2.1 and v4.3.0 only.'
+        description: 'Enter SukiSU build json. hash = any branch, tag or sha in SukiSU-Ultra/SukiSU-Ultra. Default main tracks the newest SukiSU; configs/apply_susfs_patches.sh is only validated against v4.2.1 and v4.3.0, so a main build can reject on upstream churn -- pin a release tag to get a known-good build back.'
         required: true
         type: string
-        default: '[{"type":"SUKISU","hash":"v4.3.0"}]'
+        default: '[{"type":"SUKISU","hash":"main"}]'
       optimize_level:
         description: "Compiler optimization level"
         required: true

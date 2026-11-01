@@ -70,13 +70,6 @@ for t in $family; do
 done
 if [ -z "$tag" ] && [ -n "$fallback_tag" ]; then
   tag="$fallback_tag" normal="$fallback_normal"
-  echo "::warning::no release in the $KSU_REF family ships a spoofed manager; attaching the plain one from $tag only"
-  # manager-ci publishes no spoofed APK. It exists only as the Manager-spoofed
-  # artifact of the Build Manager run, and GITHUB_TOKEN carries no actions:read
-  # on another repository, so CI cannot fetch it -- say where it lives instead.
-  if [ "$tag" = "manager-ci" ]; then
-    reasons+=("the spoofed package is not published as a release asset, so take it from the \`Manager-spoofed\` artifact of the matching [Build Manager run](https://github.com/$UPSTREAM/actions/workflows/build-manager.yml)")
-  fi
 fi
 if [ -z "$tag" ]; then
   echo "::warning::no release in $UPSTREAM pairs a manager APK with kernel ref $KSU_REF; not attaching a manager"
@@ -94,6 +87,39 @@ if [ -n "$spoofed" ]; then
   sb="$(sed -nE 's/.*_([0-9]+)(-arm64-v8a)?-release-spoofed\.apk$/\1/p' <<< "$spoofed")"
   spoofed_name="SukiSU_${sb}_spoofed.apk"
   cp "$dl/$spoofed" "$OUT_DIR/$spoofed_name"
+elif [ -n "${KSU_SHA:-}" ]; then
+  # manager-ci publishes no spoofed APK; it exists only as the Manager-spoofed
+  # artifact of the Build Manager run for this very commit. The artifact index
+  # is public but the zip needs actions:read on $UPSTREAM, which the repo's own
+  # GITHUB_TOKEN does not carry -- try it anyway, then UPSTREAM_ARTIFACT_TOKEN.
+  run_id="$(gh api "repos/$UPSTREAM/actions/runs?head_sha=$KSU_SHA&status=success&per_page=50" \
+    --jq 'first(.workflow_runs[] | select(.path == ".github/workflows/build-manager.yml") | .id) // empty' 2>/dev/null || true)"
+  art_id=""
+  if [ -n "$run_id" ]; then
+    art_id="$(gh api "repos/$UPSTREAM/actions/runs/$run_id/artifacts" \
+      --jq 'first(.artifacts[] | select(.name == "Manager-spoofed" and .expired == false) | .id) // empty' 2>/dev/null || true)"
+  fi
+  if [ -n "$art_id" ]; then
+    for tok in "$GH_TOKEN" "${UPSTREAM_ARTIFACT_TOKEN:-}"; do
+      [ -n "$tok" ] || continue
+      if GH_TOKEN="$tok" gh api "repos/$UPSTREAM/actions/artifacts/$art_id/zip" > "$dl/spoofed.zip" 2>/dev/null \
+        && unzip -qo "$dl/spoofed.zip" -d "$dl/spoofed" 2>/dev/null; then
+        apk="$(find "$dl/spoofed" -name '*-release-spoofed.apk' -print -quit)"
+        if [ -n "$apk" ]; then
+          sb="$(sed -nE 's/.*_([0-9]+)(-arm64-v8a)?-release-spoofed\.apk$/\1/p' <<< "$(basename "$apk")")"
+          spoofed_name="SukiSU_${sb:-$build}_spoofed.apk"
+          cp "$apk" "$OUT_DIR/$spoofed_name"
+          echo "spoofed manager taken from the Manager-spoofed artifact of run $run_id"
+          break
+        fi
+      fi
+      rm -rf "$dl/spoofed.zip" "$dl/spoofed"
+    done
+  fi
+  if [ -z "$spoofed_name" ]; then
+    echo "::warning::could not attach a spoofed manager for $KSU_REF; attaching the plain one from $tag only"
+    reasons+=("the spoofed package is not published as a release asset, so take it from the \`Manager-spoofed\` artifact of the matching [Build Manager run](https://github.com/$UPSTREAM/actions/workflows/build-manager.yml)")
+  fi
 fi
 if [ "$build" -ne "$DRIVER_VER" ]; then
   reasons+=("the kernels report $DRIVER_VER")

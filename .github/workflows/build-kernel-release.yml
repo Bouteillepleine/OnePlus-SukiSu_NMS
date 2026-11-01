@@ -865,6 +865,10 @@ jobs:
           UPSTREAM: SukiSU-Ultra/SukiSU-Ultra
           OUT_DIR: managers
           KSU_REF: ${{ fromJSON(needs.set-op-model.outputs.ksu_options_normalized)[0].hash }}
+          KSU_SHA: ${{ needs.set-op-model.outputs.ksu_resolved_hash }}
+          # Optional: a token with actions:read on SukiSU-Ultra, needed only to
+          # pull the spoofed manager of a branch build from its run artifact.
+          UPSTREAM_ARTIFACT_TOKEN: ${{ secrets.UPSTREAM_ARTIFACT_TOKEN }}
         run: |
           set -euo pipefail
           DRIVER_VER="$(for z in downloaded-artifacts/AK3_*.zip; do n="$(basename "$z" .zip)"; IFS=_ read -ra p <<< "${n#AK3_}"; echo "${p[4]:-}"; done | sort -u)"

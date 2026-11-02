@@ -110,9 +110,22 @@ from_release() {
   family="$(grep -E "^$(printf '%s' "$KSU_REF" | sed 's/[.]/\\./g')(-r[0-9]+)?$" <<< "$tags" || true)"
   if [ -z "$family" ]; then
     ci_names="$(gh release view manager-ci -R "$UPSTREAM" --json assets -q '.assets[].name' 2>/dev/null || true)"
-    if grep -qE -- "^SukiSU_[^_]*_${DRIVER_VER}(-arm64-v8a)?-release\.apk\$" <<< "$ci_names"; then
+    # Newest manager-ci build at or below the driver, not an exact hit only.
+    # Upstream builds the manager off its own commits, so it sits a build or two
+    # behind a freshly resolved kernel ref more often than it lands on it, and
+    # exact-or-nothing then fell through to the newest stable release: driver
+    # 41134 shipped with manager 41100, a 34-build gap, while manager-ci held
+    # 41133. Never above the driver -- a manager ahead of its driver is the same
+    # uapi mismatch from the other side.
+    ci_best="$(build_of "$ci_names" | awk -v want="$DRIVER_VER" \
+      '$0+0 <= want+0 && $0+0 > best+0 { best=$0 } END { if (best) print best }')"
+    if [ -n "$ci_best" ]; then
       family="manager-ci"
-      reasons+=("the kernels were built from \`$KSU_REF\`, which has no release of its own, so this is the rolling \`manager-ci\` build that matches driver $DRIVER_VER")
+      if [ "$ci_best" = "$DRIVER_VER" ]; then
+        reasons+=("the kernels were built from \`$KSU_REF\`, which has no release of its own, so this is the rolling \`manager-ci\` build that matches driver $DRIVER_VER")
+      else
+        reasons+=("the kernels were built from \`$KSU_REF\`, which has no release of its own, so this is \`manager-ci\` build $ci_best -- the newest upstream manager at or below driver $DRIVER_VER")
+      fi
     fi
   fi
   if [ -z "$family" ]; then

@@ -1606,6 +1606,40 @@ if [ -f kernel/Kbuild.rej ]; then
   rm -f kernel/Kbuild.rej
 fi
 
+# ---------------------------------------------------------------------------
+# KernelSU moved the policy-generation bump out of apply_kernelsu_rules()'s tail
+# (tiann/KernelSU#3969), so the enable-patch's two rules.c hunks now reject. Their
+# ONLY functional addition is the susfs_set_batch_sid() call; everything else just
+# reverts reset_avc_cache(pol->latest_granting) to the seqno-less reset_avc_cache().
+# Keep the fork's real generation -- apply_nomount_stack.sh classifies such a tree
+# as 'upstream' and skips fix_selinux_seqno precisely because deleting the status
+# update there is actively harmful -- and re-inject just the call. Without it
+# susfs_{zygote,zygote_next,ksu,init,priv_app}_sid all stay 0 after every policy
+# load, so susfs_is_current_*_domain() silently answers for sid 0 instead.
+# ---------------------------------------------------------------------------
+if [ -f kernel/selinux/rules.c.rej ]; then
+  if ! grep -q 'susfs_set_batch_sid();' kernel/selinux/rules.c.rej; then
+    echo "::error::kernel/selinux/rules.c.rej is not the known susfs_set_batch_sid reject; reconcile it by hand"
+    cat kernel/selinux/rules.c.rej
+    exit 1
+  fi
+  if ! grep -q 'susfs_set_batch_sid();' kernel/selinux/rules.c; then
+    echo "Re-injecting susfs_set_batch_sid() into apply_kernelsu_rules()"
+    perl -0pi -e 's/([ \t]*reset_avc_cache\(pol->latest_granting\);\n)(out_unlock:)/$1\n    susfs_set_batch_sid();\n$2/' kernel/selinux/rules.c
+  fi
+  n="$(grep -c 'susfs_set_batch_sid();' kernel/selinux/rules.c)"
+  if [ "$n" != 1 ]; then
+    echo "::error::susfs_set_batch_sid() appears $n time(s) in kernel/selinux/rules.c, want exactly 1"
+    exit 1
+  fi
+  s="$(grep -c 'reset_avc_cache(pol->latest_granting);' kernel/selinux/rules.c)"
+  if [ "$s" != 2 ]; then
+    echo "::error::reset_avc_cache(pol->latest_granting) appears $s time(s), want 2 -- the true policy generation is no longer threaded, so /sys/fs/selinux/status would publish a stale or zero policyload"
+    exit 1
+  fi
+  rm -f kernel/selinux/rules.c.rej
+fi
+
 if [ -n "$(find . -name '*.rej' -print -quit)" ]; then
   echo "::error::Unexpected KernelSU-side .rej files remain:"
   find . -name '*.rej' -exec echo "=== {} ===" \; -exec cat {} \;

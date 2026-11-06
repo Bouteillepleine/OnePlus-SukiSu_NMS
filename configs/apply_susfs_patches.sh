@@ -1627,14 +1627,22 @@ if [ -f kernel/selinux/rules.c.rej ]; then
     echo "Re-injecting susfs_set_batch_sid() into apply_kernelsu_rules()"
     perl -0pi -e 's/([ \t]*reset_avc_cache\(pol->latest_granting\);\n)(out_unlock:)/$1\n    susfs_set_batch_sid();\n$2/' kernel/selinux/rules.c
   fi
+  # Drop the generation bumps as well. The enable patch rewrote reset_avc_cache()
+  # into a K&R no-arg definition hardcoding selinux_status_update_policyload(0),
+  # so the argument our surviving call sites pass is discarded. Keeping the bumps
+  # therefore advances pol->latest_granting (and access.avd.seqno with it) while
+  # the status page stays put: measured on an OP15 (CPH2747, 6.12.69) 2026-11-06
+  # as policyload=1 vs avd.seqno=5, which DuckDetector flags as an app_zygote
+  # seqno split. Frozen and coherent is what measured Clean.
+  perl -0pi -e 's/^[ \t]*pol->latest_granting = old_pol->latest_granting \+ 1;\n//mg' kernel/selinux/rules.c
   n="$(grep -c 'susfs_set_batch_sid();' kernel/selinux/rules.c)"
   if [ "$n" != 1 ]; then
     echo "::error::susfs_set_batch_sid() appears $n time(s) in kernel/selinux/rules.c, want exactly 1"
     exit 1
   fi
-  s="$(grep -c 'reset_avc_cache(pol->latest_granting);' kernel/selinux/rules.c)"
-  if [ "$s" != 2 ]; then
-    echo "::error::reset_avc_cache(pol->latest_granting) appears $s time(s), want 2 -- the true policy generation is no longer threaded, so /sys/fs/selinux/status would publish a stale or zero policyload"
+  b="$(grep -c 'latest_granting = old_pol->latest_granting + 1' kernel/selinux/rules.c)"
+  if [ "$b" != 0 ]; then
+    echo "::error::pol->latest_granting is still bumped $b time(s) in kernel/selinux/rules.c; that desynchronises access.avd.seqno from status.policyload and opens an app_zygote seqno split"
     exit 1
   fi
   rm -f kernel/selinux/rules.c.rej

@@ -1635,12 +1635,14 @@ if [ -f kernel/selinux/rules.c.rej ]; then
   # as policyload=1 vs avd.seqno=5, which DuckDetector flags as an app_zygote
   # seqno split. Frozen and coherent is what measured Clean.
   perl -0pi -e 's/^[ \t]*pol->latest_granting = old_pol->latest_granting \+ 1;\n//mg' kernel/selinux/rules.c
-  n="$(grep -c 'susfs_set_batch_sid();' kernel/selinux/rules.c)"
+  n="$(grep -c 'susfs_set_batch_sid();' kernel/selinux/rules.c || true)"
   if [ "$n" != 1 ]; then
     echo "::error::susfs_set_batch_sid() appears $n time(s) in kernel/selinux/rules.c, want exactly 1"
     exit 1
   fi
-  b="$(grep -c 'latest_granting = old_pol->latest_granting + 1' kernel/selinux/rules.c)"
+  # grep -c exits 1 on zero matches; this script runs under set -e, so without
+  # || true the check would abort the build exactly when it is satisfied.
+  b="$(grep -c 'latest_granting = old_pol->latest_granting + 1' kernel/selinux/rules.c || true)"
   if [ "$b" != 0 ]; then
     echo "::error::pol->latest_granting is still bumped $b time(s) in kernel/selinux/rules.c; that desynchronises access.avd.seqno from status.policyload and opens an app_zygote seqno split"
     exit 1

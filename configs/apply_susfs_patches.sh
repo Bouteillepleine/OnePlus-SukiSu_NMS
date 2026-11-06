@@ -1607,15 +1607,16 @@ if [ -f kernel/Kbuild.rej ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# KernelSU moved the policy-generation bump out of apply_kernelsu_rules()'s tail
-# (tiann/KernelSU#3969), so the enable-patch's two rules.c hunks now reject. Their
-# ONLY functional addition is the susfs_set_batch_sid() call; everything else just
-# reverts reset_avc_cache(pol->latest_granting) to the seqno-less reset_avc_cache().
-# Keep the fork's real generation -- apply_nomount_stack.sh classifies such a tree
-# as 'upstream' and skips fix_selinux_seqno precisely because deleting the status
-# update there is actively harmful -- and re-inject just the call. Without it
-# susfs_{zygote,zygote_next,ksu,init,priv_app}_sid all stay 0 after every policy
-# load, so susfs_is_current_*_domain() silently answers for sid 0 instead.
+# tiann/KernelSU#3969 moved the policy-generation bump out of
+# apply_kernelsu_rules()'s tail, which made the enable-patch's two rules.c hunks
+# reject. susfs4ksu 48b83803 ("KernelSU: Sync with upstream", 2026-11-06 ~16:18Z)
+# then absorbed #3969 into the enable patch itself, so on SukiSU-Ultra it applies
+# cleanly again and this recovery no longer fires. It is kept for the older shape:
+# susfs could revert, and the fix belongs in one place either way.
+#
+# The post-conditions after the branch are what actually matter, so they run
+# unconditionally -- they used to sit inside it and went silent the moment the
+# reject stopped appearing.
 # ---------------------------------------------------------------------------
 if [ -f kernel/selinux/rules.c.rej ]; then
   if ! grep -q 'susfs_set_batch_sid();' kernel/selinux/rules.c.rej; then
@@ -1635,19 +1636,28 @@ if [ -f kernel/selinux/rules.c.rej ]; then
   # as policyload=1 vs avd.seqno=5, which DuckDetector flags as an app_zygote
   # seqno split. Frozen and coherent is what measured Clean.
   perl -0pi -e 's/^[ \t]*pol->latest_granting = old_pol->latest_granting \+ 1;\n//mg' kernel/selinux/rules.c
-  n="$(grep -c 'susfs_set_batch_sid();' kernel/selinux/rules.c || true)"
-  if [ "$n" != 1 ]; then
-    echo "::error::susfs_set_batch_sid() appears $n time(s) in kernel/selinux/rules.c, want exactly 1"
-    exit 1
-  fi
-  # grep -c exits 1 on zero matches; this script runs under set -e, so without
-  # || true the check would abort the build exactly when it is satisfied.
-  b="$(grep -c 'latest_granting = old_pol->latest_granting + 1' kernel/selinux/rules.c || true)"
-  if [ "$b" != 0 ]; then
-    echo "::error::pol->latest_granting is still bumped $b time(s) in kernel/selinux/rules.c; that desynchronises access.avd.seqno from status.policyload and opens an app_zygote seqno split"
-    exit 1
-  fi
   rm -f kernel/selinux/rules.c.rej
+fi
+
+# Whether the recovery above ran or the enable patch did the work itself, rules.c
+# must end up with exactly one susfs_set_batch_sid() call and no generation bump.
+# Without the call susfs_{zygote,zygote_next,ksu,init,priv_app}_sid all stay 0
+# after every policy load and susfs_is_current_*_domain() answers for sid 0. With
+# a bump left in, pol->latest_granting climbs while the enable patch's K&R no-arg
+# reset_avc_cache() keeps hardcoding selinux_status_update_policyload(0): measured
+# on an OP15 (CPH2747, 6.12.69) 2026-11-06 as policyload=1 vs avd.seqno=5, which
+# DuckDetector reports as an app_zygote seqno split.
+n="$(grep -c 'susfs_set_batch_sid();' kernel/selinux/rules.c || true)"
+if [ "$n" != 1 ]; then
+  echo "::error::susfs_set_batch_sid() appears $n time(s) in kernel/selinux/rules.c, want exactly 1"
+  exit 1
+fi
+# grep -c exits 1 on zero matches; this script runs under set -e, so without
+# || true the check would abort the build exactly when it is satisfied.
+b="$(grep -c 'latest_granting = old_pol->latest_granting + 1' kernel/selinux/rules.c || true)"
+if [ "$b" != 0 ]; then
+  echo "::error::pol->latest_granting is still bumped $b time(s) in kernel/selinux/rules.c; that desynchronises access.avd.seqno from status.policyload and opens an app_zygote seqno split"
+  exit 1
 fi
 
 if [ -n "$(find . -name '*.rej' -print -quit)" ]; then

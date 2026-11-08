@@ -37,12 +37,15 @@ echo "$susfs_version" >> "${ARTIFACTS_FOLDER}/${OP_MODEL}_${OP_OS_VERSION}.txt"
 
 echo "SusFS Version: $susfs_version"
 
+# v2.4.0 added: 50_add_susfs_in_gki-<kmi>.patch is byte-identical to the v2.3.0
+# one on all five KMIs, so the reject record in apply_susfs_kernel.sh still fits.
+# The label moved, the kernel side did not.
 case "$susfs_version" in
-  v2.1.0|v2.2.0|v2.3.0)
+  v2.1.0|v2.2.0|v2.3.0|v2.4.0)
     echo "Supported SUSFS version detected: $susfs_version"
     ;;
   *)
-    echo "::error::This workflow step supports SUSFS v2.1.0, v2.2.0 and v2.3.0 only. Detected: $susfs_version"
+    echo "::error::This workflow step supports SUSFS v2.1.0, v2.2.0, v2.3.0 and v2.4.0 only. Detected: $susfs_version"
     exit 1
     ;;
 esac
@@ -1431,11 +1434,11 @@ normalize_sukisu_to_official_baseline() {
   # design and fix_sukisu_sucompat_api rebuilds the old API; normalising there
   # would change which hunks land and break that CI/device-proven path.
   case "${susfs_version:-}" in
-v2.3.0) ;;
-*) echo "ℹ️ SUSFS ${susfs_version:-unknown}: skipping official-baseline normalisation (v2.3.0 only)"; return 0 ;;
+v2.3.0|v2.4.0) ;;
+*) echo "ℹ️ SUSFS ${susfs_version:-unknown}: skipping official-baseline normalisation (v2.3.0 and newer only)"; return 0 ;;
   esac
 
-  echo "Normalising SukiSU tree to the official-KernelSU baseline (SUSFS v2.3.0)"
+  echo "Normalising SukiSU tree to the official-KernelSU baseline (SUSFS ${susfs_version})"
 
   if [ -f "$k/include/arch.h" ] && ! grep -q 'PT_REGS_SYSCALL_PARM1' "$k/include/arch.h"; then
 sed -i 's|^#define PT_REGS_PARM1(x).*|&\n#ifndef __PT_SYSCALL_PARM1_REG\n#define __PT_SYSCALL_PARM1_REG __PT_PARM1_REG\n#endif\n#define PT_REGS_SYSCALL_PARM1(x) (__PT_REGS_CAST(x)->__PT_SYSCALL_PARM1_REG)|' "$k/include/arch.h"

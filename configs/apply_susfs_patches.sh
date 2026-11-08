@@ -688,7 +688,7 @@ fix_sukisu_sucompat_api() {
   [ -d "$base" ] || return 0
 
   if susfs_v230_sucompat_api_present "$base"; then
-    echo "ℹ️ SUSFS v2.3.0 sucompat API already in place in $base; skipping legacy rebuild"
+    echo "ℹ️ SUSFS ${susfs_version}: v2.3.0+ sucompat API already in place in $base; skipping legacy rebuild"
     return 0
   fi
 
@@ -901,7 +901,7 @@ fix_sukisu_forced_execveat_link_symbols() {
   [ -d "$base" ] || return 0
 
   if susfs_v230_sucompat_api_present "$base"; then
-    echo "ℹ️ SUSFS v2.3.0 sucompat API already in place in $base; skipping legacy rebuild"
+    echo "ℹ️ SUSFS ${susfs_version}: v2.3.0+ sucompat API already in place in $base; skipping legacy rebuild"
     return 0
   fi
 
@@ -1158,7 +1158,7 @@ fix_sukisu_syscall_event_bridge() {
   base="$(dirname "$(dirname "$target")")"
 
   if susfs_v230_sucompat_api_present "$base"; then
-    echo "ℹ️ SUSFS v2.3.0: syscall_event_bridge.c is no longer compiled; skipping"
+    echo "ℹ️ SUSFS ${susfs_version}: syscall_event_bridge.c is no longer compiled (v2.3.0+); skipping"
     return 0
   fi
   local sucompat_c="$base/feature/sucompat.c"
@@ -1710,7 +1710,7 @@ sed -i 's/is_zygote_normal_app_uid(new_uid)/is_appuid(new_uid)/' drivers/kernels
 if ! grep -RqsE '\bsusfs_extra_works\b' "$COMMON_KERNEL_FOLDER/fs/susfs.c" 2>/dev/null; then
   sed -i 's/ksu_handle_extra_susfs_work();/\/\/ ksu_handle_extra_susfs_work();/' drivers/kernelsu/hook/setuid_hook.c 2>/dev/null || true
 else
-  echo "SUSFS v2.2.0: keeping ksu_handle_extra_susfs_work() enabled (susfs_extra_works present)"
+  echo "SUSFS ${susfs_version}: keeping ksu_handle_extra_susfs_work() enabled (susfs_extra_works present)"
 fi
 
 if [ -f drivers/kernelsu/core/init.c ]; then
@@ -2290,7 +2290,7 @@ bridge_sucompat_c="$bridge_base/feature/sucompat.c"
 # own in-kernel hook call sites), so the file is left on disk but never compiled.
 # Its stale pt_regs sucompat calls are then irrelevant - don't fail the build over them.
 if susfs_v230_sucompat_api_present "$bridge_base"; then
-  echo "ℹ️ SUSFS v2.3.0: $bridge is not compiled; skipping bridge API validation"
+  echo "ℹ️ SUSFS ${susfs_version}: $bridge is not compiled (v2.3.0+); skipping bridge API validation"
   continue
 fi
 

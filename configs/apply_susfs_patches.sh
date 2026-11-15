@@ -1629,7 +1629,20 @@ if [ -f kernel/selinux/rules.c.rej ]; then
   fi
   if ! grep -q 'susfs_set_batch_sid();' kernel/selinux/rules.c; then
     echo "Re-injecting susfs_set_batch_sid() into apply_kernelsu_rules()"
-    perl -0pi -e 's/([ \t]*reset_avc_cache\(pol->latest_granting\);\n)(out_unlock:)/$1\n    susfs_set_batch_sid();\n$2/' kernel/selinux/rules.c
+    # The argument comes and goes: tiann/KernelSU#3969 dropped pol->latest_granting,
+    # the SukiSU-Ultra SHA we pin carries the no-arg shape, and ShirkNeko main has
+    # since taken `u32 seqno` back -- so susfs regenerating the enable patch against
+    # a tree newer than our pin makes all four rules.c hunks read as already applied
+    # and `patch --forward` drops the one that actually adds something. Match either
+    # shape, and anchor on `out_unlock:` being the next line rather than on the
+    # argument: handle_sepolicy()'s call site is followed by `goto out_unlock;`, so
+    # only apply_kernelsu_rules()'s tail can match.
+    perl -0pi -e 's/([ \t]*reset_avc_cache\((?:pol->latest_granting)?\);\n)(out_unlock:)/$1\n    susfs_set_batch_sid();\n$2/' kernel/selinux/rules.c
+    if ! grep -q 'susfs_set_batch_sid();' kernel/selinux/rules.c; then
+      echo "::error::could not re-inject susfs_set_batch_sid(): no reset_avc_cache() call directly above out_unlock: in kernel/selinux/rules.c"
+      grep -n 'reset_avc_cache\|out_unlock' kernel/selinux/rules.c
+      exit 1
+    fi
   fi
   # Drop the generation bumps as well. The enable patch rewrote reset_avc_cache()
   # into a K&R no-arg definition hardcoding selinux_status_update_policyload(0),

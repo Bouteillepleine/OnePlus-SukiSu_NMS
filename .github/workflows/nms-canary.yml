@@ -45,7 +45,12 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       STATE_FILE: nms_canary_state.txt
-      KSU_OPTIONS: '[{"type":"SUKISU","hash":"v4.3.0"}]'
+      # Tracks main because the canary's job is to prove the stack still applies to
+      # CURRENT upstream, and main is what heads.txt already watches. It was
+      # v4.3.0, which cannot build on any susfs -- its setuid_hook.c dropped the
+      # tp_marker.h include susfs anchors on -- so a red canary build carried no
+      # information about drift for as long as that stood.
+      KSU_OPTIONS: '[{"type":"SUKISU","hash":"main"}]'
       CANARY_TARGET: ${{ github.event.inputs.canary_target || 'OP15-6.12.81' }}
     steps:
       - name: Collect upstream HEADs

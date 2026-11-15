@@ -985,12 +985,12 @@ runs:
         echo "Downloading SukiSU setup script from $SETUP_REF..."
         if ! curl --fail --location --proto '=https' --tlsv1.2 -LSs \
           --retry 5 --retry-delay 5 --retry-all-errors \
-          "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/${SETUP_REF}/kernel/setup.sh" \
+          "https://raw.githubusercontent.com/SukiSU-Nova/SukiSU-Nova/${SETUP_REF}/kernel/setup.sh" \
           -o "$SUKISU_SETUP_SCRIPT"; then
           echo "::warning::setup.sh not available at $SETUP_REF, falling back to main"
           if ! curl --fail --location --proto '=https' --tlsv1.2 -LSs \
             --retry 5 --retry-delay 5 --retry-all-errors \
-            "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" \
+            "https://raw.githubusercontent.com/SukiSU-Nova/SukiSU-Nova/main/kernel/setup.sh" \
             -o "$SUKISU_SETUP_SCRIPT"; then
             echo "::error::Failed to download SukiSU setup.sh after retries"
             exit 1
@@ -2797,7 +2797,7 @@ runs:
           echo "| **SukiSU Version** | ${KSUVER:-unknown} |"
           
           if [ "$KSU_SHA" != "unknown" ]; then
-            echo "| **SukiSU Commit** | [\`${KSU_SHA:0:8}\`](https://github.com/SukiSU-Ultra/SukiSU-Ultra/commit/$KSU_SHA) |"
+            echo "| **SukiSU Commit** | [\`${KSU_SHA:0:8}\`](https://github.com/SukiSU-Nova/SukiSU-Nova/commit/$KSU_SHA) |"
           else
             echo "| **SukiSU Commit** | unknown |"
           fi

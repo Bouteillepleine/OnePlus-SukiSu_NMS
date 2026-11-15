@@ -64,7 +64,7 @@ jobs:
             printf '%s %s %s (%s)\n' "$repo" "$ref" "$sha" "$note" >> heads.txt
           done <<'SOURCES'
           KernelSU-Next/KernelSU-Next#dev#KSUN root impl
-          ShirkNeko/SukiSU-Ultra#main#SukiSU root impl
+          SukiSU-Nova/SukiSU-Nova#main#SukiSU root impl
           Baka-SU/BakaSU#main#BakaSU root impl
           WildKernels/kernel_patches#main#hooks + susfs, UNPINNED
           Bouteillepleine/kernel_patches#main#our _ghost/_pathhide/_hook

@@ -1613,7 +1613,7 @@ fi
 # tiann/KernelSU#3969 moved the policy-generation bump out of
 # apply_kernelsu_rules()'s tail, which made the enable-patch's two rules.c hunks
 # reject. susfs4ksu 48b83803 ("KernelSU: Sync with upstream", 2026-11-06 ~16:18Z)
-# then absorbed #3969 into the enable patch itself, so on SukiSU-Ultra it applies
+# then absorbed #3969 into the enable patch itself, so on SukiSU it applies
 # cleanly again and this recovery no longer fires. It is kept for the older shape:
 # susfs could revert, and the fix belongs in one place either way.
 #
@@ -1630,7 +1630,7 @@ if [ -f kernel/selinux/rules.c.rej ]; then
   if ! grep -q 'susfs_set_batch_sid();' kernel/selinux/rules.c; then
     echo "Re-injecting susfs_set_batch_sid() into apply_kernelsu_rules()"
     # The argument comes and goes: tiann/KernelSU#3969 dropped pol->latest_granting,
-    # the SukiSU-Ultra SHA we pin carries the no-arg shape, and ShirkNeko main has
+    # the SukiSU SHA we pin carries the no-arg shape, and SukiSU main has
     # since taken `u32 seqno` back -- so susfs regenerating the enable patch against
     # a tree newer than our pin makes all four rules.c hunks read as already applied
     # and `patch --forward` drops the one that actually adds something. Match either

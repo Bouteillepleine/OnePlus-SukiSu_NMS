@@ -15,12 +15,14 @@ reasons=()
 build="" normal_path="" spoofed_path="" source_md=""
 
 # The kernels are arm64, so of a per-ABI split build only arm64-v8a is of any
-# use here. Stable releases and the CI artifacts ship one un-split APK
-# (SukiSU_v4.3.0_41100-release.apk); the manager-ci release splits per ABI
-# (SukiSU_v4.3.0_41120-arm64-v8a-release.apk). Anchoring both '_'-delimited
-# fields is what keeps x86_64 out: its own '_' makes the tail of
-# SukiSU_v4.3.0_41120-x86_64-release.apk read as a build number.
-apk_re='^SukiSU_[^_]*_[0-9]+(-arm64-v8a)?-release'
+# use here. The CI artifacts ship one un-split APK
+# (SukiSU_v4.3.0-r2_41184-release.apk); the manager-ci release splits per ABI,
+# and the Nova rename put a brand word in front of the version
+# (SukiSU_Nova_v3.0.0_30000-arm64-v8a-release.apk), so that word is optional
+# here -- both namings are in flight at once. Anchoring both '_'-delimited
+# fields either side of it is what keeps x86_64 out: its own '_' makes the tail
+# of SukiSU_Nova_v3.0.0_30000-x86_64-release.apk read as a build number.
+apk_re='^SukiSU(_[A-Za-z]+)?_[^_]*_[0-9]+(-arm64-v8a)?-release'
 
 build_of() {
   sed -nE 's/.*_([0-9]+)(-arm64-v8a)?-release(-spoofed)?\.apk$/\1/p' <<< "$1"
@@ -45,11 +47,17 @@ pick() {
 # The certificate of the official release asset, taken straight from github.com.
 # This is what the kernel itself checks in manager/apk_sign.c, so an APK that
 # does not carry it could not act as the manager anyway.
+# Nova's stable release carries only ksud/ksuinit/lkm assets, no APK at all, so
+# the newest release cannot always answer for the certificate; manager-ci can.
 reference_signer() {
-  local url
-  url="$(gh api "repos/$UPSTREAM/releases/latest" \
-    --jq '[.assets[].browser_download_url | select(endswith("-release.apk"))
-           | select(contains("spoofed") | not)] | .[0] // empty' 2>/dev/null || true)"
+  local url rel
+  url=""
+  for rel in latest tags/manager-ci; do
+    url="$(gh api "repos/$UPSTREAM/releases/$rel" \
+      --jq '[.assets[].browser_download_url | select(endswith("-release.apk"))
+             | select(contains("spoofed") | not)] | .[0] // empty' 2>/dev/null || true)"
+    [ -n "$url" ] && break
+  done
   [ -n "$url" ] || return 1
   curl -fsSL --retry 3 --retry-delay 5 --retry-connrefused \
     -o "$dl/reference.apk" "$url" || return 1

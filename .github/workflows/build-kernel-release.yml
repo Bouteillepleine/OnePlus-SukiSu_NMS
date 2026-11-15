@@ -42,7 +42,7 @@ on:
         type: string
         default: ''
       ksu_options:
-        description: 'Enter SukiSU build json. hash = any branch, tag or sha in SukiSU-Ultra/SukiSU-Ultra. Default main tracks the newest SukiSU; configs/apply_susfs_patches.sh is only validated against v4.2.1 and v4.3.0, so a main build can reject on upstream churn -- pin a release tag to get a known-good build back.'
+        description: 'Enter SukiSU build json. hash = any branch, tag or sha in SukiSU-Nova/SukiSU-Nova. Default main tracks the newest SukiSU; the Nova rename deleted every v4.x tag, so pin a sha rather than a tag to get a known-good build back -- configs/apply_susfs_patches.sh was validated against the v4.2.1 and v4.3.0 trees and a main build can reject on upstream churn.'
         required: true
         type: string
         default: '[{"type":"SUKISU","hash":"main"}]'
@@ -275,8 +275,8 @@ jobs:
           ksu_type=$(echo "$ksu_options_normalized" | jq -r '.[0].type')
           ksu_ref=$(echo "$ksu_options_normalized" | jq -r '.[0].hash')
           
-          KSU_REPO_OWNER="SukiSU-Ultra"
-          KSU_REPO_NAME="SukiSU-Ultra"
+          KSU_REPO_OWNER="SukiSU-Nova"
+          KSU_REPO_NAME="SukiSU-Nova"
           
           HEAD_REF="refs/heads/${ksu_ref}"
           TAG_REF="refs/tags/${ksu_ref}"
@@ -963,7 +963,7 @@ jobs:
       - name: 📥 Fetch the SukiSU manager APKs
         shell: bash
         env:
-          UPSTREAM: SukiSU-Ultra/SukiSU-Ultra
+          UPSTREAM: SukiSU-Nova/SukiSU-Nova
           OUT_DIR: managers
           KSU_REF: ${{ fromJSON(needs.set-op-model.outputs.ksu_options_normalized)[0].hash }}
         run: |
@@ -1375,7 +1375,7 @@ jobs:
           echo "  Use the one attached here, not a newer one from upstream." >> release_notes.md
           else
           cat << EOF >> release_notes.md
-          - **SukiSU Manager**: not attached to this release, no upstream release pairs with driver ${ksu_ver_global}. Take it from the [SukiSU-Ultra releases](https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases).
+          - **SukiSU Manager**: not attached to this release, no upstream release pairs with driver ${ksu_ver_global}. Take it from the [SukiSU-Nova releases](https://github.com/SukiSU-Nova/SukiSU-Nova/releases).
           EOF
           fi
           cat << EOF >> release_notes.md

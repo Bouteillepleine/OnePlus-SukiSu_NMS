@@ -179,7 +179,7 @@ Root option:
 
 ## Links
 
-- [SukiSU Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra) · [SukiSU Manager releases](https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases)
+- [SukiSU Nova](https://github.com/SukiSU-Nova/SukiSU-Nova) · [SukiSU Manager releases](https://github.com/SukiSU-Nova/SukiSU-Nova/releases)
 - [NoMount Suite](https://github.com/Bouteillepleine/NoMount-Suite), the hiding add-on
 - [Kernel Flasher](https://github.com/fatalcoder524/KernelFlasher)
 - [Releases](https://github.com/Bouteillepleine/OnePlus-SukiSu_NMS/releases)

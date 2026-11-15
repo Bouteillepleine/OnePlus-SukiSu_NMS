@@ -157,6 +157,9 @@ jobs:
         if: steps.decide.outputs.moved == 'yes'
         run: |
           set -eu
+          before="$(gh run list --repo '${{ github.repository }}' \
+                      --workflow build-kernel-release.yml --limit 30 \
+                      --json databaseId --jq '[.[].databaseId] | join(" ")')"
           gh workflow run build-kernel-release.yml \
             --repo '${{ github.repository }}' \
             --ref '${{ github.ref_name }}' \
@@ -165,7 +168,27 @@ jobs:
             -f op_target_model="$CANARY_TARGET" \
             -f ksu_options="$KSU_OPTIONS" \
             -f optimize_level=O2
-          echo "dispatched $CANARY_TARGET"
+          # `gh workflow run` exits 0 on a dispatch GitHub then drops: the 05:21Z run on
+          # 2026-11-15 was green on this step and created no build at all, and "Record the
+          # new HEADs" wrote the baseline anyway -- which marked SukiSU 5b6262e8's drift
+          # as checked with nothing ever compiled, and the next run read quiet. Only a run
+          # id proves the dispatch landed, and failing here keeps the baseline untouched
+          # so the same drift is dispatched again next time.
+          new=""
+          for _ in $(seq 1 15); do
+            sleep 4
+            for id in $(gh run list --repo '${{ github.repository }}' \
+                          --workflow build-kernel-release.yml --limit 30 \
+                          --json databaseId --jq '.[].databaseId'); do
+              case " $before " in
+                *" $id "*) ;;
+                *) new="$id"; break 2 ;;
+              esac
+            done
+          done
+          [ -n "$new" ] || { echo "::error::dispatch created no build run; baseline left untouched"; exit 1; }
+          echo "dispatched $CANARY_TARGET as run $new"
+          echo "${{ github.server_url }}/${{ github.repository }}/actions/runs/$new"
 
       - name: Record the new HEADs
         if: steps.decide.outputs.moved == 'yes'

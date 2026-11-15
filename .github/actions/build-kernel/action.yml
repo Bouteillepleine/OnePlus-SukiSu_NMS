@@ -1088,7 +1088,7 @@ runs:
         fi
 
         if [ -f "$KERNEL_PLATFORM_FOLDER/KernelSU/kernel/Kbuild" ]; then
-          sed -i 's#^KSU_VERSION_FULL :=.*#KSU_VERSION_FULL := v$(VERSION_TAG)-⚡Ultra⚡@SukiSU#' "$KERNEL_PLATFORM_FOLDER/KernelSU/kernel/Kbuild" || true
+          sed -i 's#^KSU_VERSION_FULL :=.*#KSU_VERSION_FULL := v$(VERSION_TAG)-⚡Nova⚡@SukiSU#' "$KERNEL_PLATFORM_FOLDER/KernelSU/kernel/Kbuild" || true
         fi
 
         {

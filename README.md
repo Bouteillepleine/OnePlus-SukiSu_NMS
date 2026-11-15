@@ -1,6 +1,6 @@
 <div align="center">
 
-# OnePlus · SukiSU Ultra · NoMount · SuSfS 2.4.0
+# OnePlus · SukiSU Nova · NoMount · SuSfS 2.4.0
 
 ### A custom OnePlus kernel + a **mountless** hiding add-on
 
@@ -83,7 +83,7 @@ redirection inside the kernel:
 
 ## What else is in the kernel
 
-- **SukiSU Ultra**, kernel-level root.
+- **SukiSU Nova**, kernel-level root.
 - **AutoFDO**, profile-guided codegen using the AOSP profile matched to each kernel sublevel.
 - **MLGO register allocation**, ML-guided allocation on targets whose toolchain ships the model.
 - **BORE** (Burst-Oriented Response Enhancer), a scheduler that favours low-burst interactive
@@ -170,7 +170,7 @@ Actions → Build and Release OnePlus Kernels → Run workflow
 Root option:
 
 ```json
-[{"type":"SUKISU","hash":"v4.2.1"}]
+[{"type":"SUKISU","hash":"main"}]
 ```
 
 > **First run:** enable **Force toolchain sync before build** (auto-on for releases). Required once to populate the toolchain cache.
@@ -196,7 +196,7 @@ Appreciated, never expected.
 ## Acknowledgments
 
 - **[NoMount Suite](https://github.com/Bouteillepleine/NoMount-Suite)** &amp; all contributors (built on **[maxsteeel/nomount](https://github.com/maxsteeel/nomount)**)
-- **SukiSU Ultra**, the root solution
+- **SukiSU Nova**, the root solution
 - **AnyKernel3** by osm0sis and contributors
 - **[WildKernels/OnePlus_KernelSU_SUSFS](https://github.com/WildKernels/OnePlus_KernelSU_SUSFS)**, the excellent OnePlus build framework this is forked from
 - **[simonpunk/susfs4ksu](https://gitlab.com/simonpunk/susfs4ksu)**, SUSFS, patched into every kernel here

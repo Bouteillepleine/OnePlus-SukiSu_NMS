@@ -1030,7 +1030,7 @@ if ! grep -qE '^[[:space:]]*int[[:space:]]+ksu_handle_execveat[[:space:]]*\(' "$
  * SukiSU/SUSFS compatibility shim.
  *
  * Some SUSFS patchsets expect KernelSU-style execveat hooks, while newer
- * SukiSU Ultra trees may not expose these exact symbols. Returning 0 keeps
+ * SukiSU Nova trees may not expose these exact symbols. Returning 0 keeps
  * the normal kernel execveat path unchanged.
  */
 int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
@@ -1097,7 +1097,7 @@ if grep -q 'ksu_handle_execveat_init[[:space:]]*(' "$ksud_integration_c"; then
  * SukiSU/SUSFS compatibility shim.
  *
  * Some SUSFS patchsets expect ksu_handle_execveat_init(), while this SukiSU
- * Ultra tree may only declare or call it. Provide the missing body.
+ * Nova tree may only declare or call it. Provide the missing body.
  */
 int ksu_handle_execveat_init(struct filename *filename, struct user_arg_ptr *argv_user, struct user_arg_ptr *envp_user)
 {

@@ -415,9 +415,42 @@ fix_sukisu_selinux_hide_c() {
     perl -0pi -e 's/[ \t]*return \(\(setprocattr_fn\)selinux_setprocattr_hook\.original\)\(name, value, size\);/    return -ENOSYS;/' "$target" || true
     perl -0pi -e 's/typedef int \(\*setprocattr_fn\)\([^;]*;\n//' "$target" || true
 
-    if grep -q 'ksu_lsm_hook\|ksu_lsm_unhook\|KSU_LSM_HOOK_INIT\|setprocattr_fn\|selinux_setprocattr_hook' "$target"; then
+    # setprocattr is the only hook SUSFS re-hooks kernel-side, so it is the only one
+    # that can be adapted. Any OTHER hook in this file has nothing to chain into once
+    # hook/lsm_hook.o is gone, so it comes out whole -- discovered by name rather than
+    # listed, because SukiSU keeps adding them (tiann/KernelSU#3996 added inode_setxattr
+    # on 2026-11-14 and broke every build until this loop existed). Loud on purpose: each
+    # one dropped is a SukiSU cloak we stop shipping.
+    while read -r hv hb; do
+      [ -n "$hv" ] || continue
+      [ "$hb" != setprocattr ] || continue
+      echo "::warning::dropped SukiSU LSM hook $hb ($hv); SUSFS has no kernel-side hook to chain it into"
+      hook_var="$hv" hook_base="$hb" perl -0pi -e '
+        my ($v, $b) = ($ENV{hook_var}, $ENV{hook_base});
+        # The whole family is one contiguous block: forward declaration, the fn typedef,
+        # my_<base>() in its LINUX_VERSION_CODE shapes, then the KSU_LSM_HOOK_INIT that
+        # terminates it. Fall back to the function itself when there is no declaration.
+        s/^static struct ksu_lsm_hook \Q$v\E;\n.*?^[ \t]*KSU_LSM_HOOK_INIT\(\Q$b\E,[^;]*;\n//ms
+          or s/^(?:#if LINUX_VERSION_CODE[^\n]*\n)?(?=[^\n]*my_\Q$b\E\().*?^[ \t]*KSU_LSM_HOOK_INIT\(\Q$b\E,[^;]*;\n//ms;
+        s/^[ \t]*ret = ksu_lsm_hook\(&\Q$v\E\);\n[ \t]*if \(ret\) \{\n[^}]*\n[ \t]*goto unhook;\n[ \t]*\}\n//m;
+        s/^[ \t]*ksu_lsm_unhook\(&\Q$v\E\);\n//m;
+        s/^[ \t]*\Q$v\E\.original = [^;]*;\n//m;
+      ' "$target" || true
+    done < <(perl -0ne 'while (/struct ksu_lsm_hook\s+(\w+)\s*=\s*KSU_LSM_HOOK_INIT\(\s*(\w+)\s*,/gs) { print "$1 $2\n" }' "$target")
+
+    # #3996's helper exists only to resolve that hook's original and the inode_doinit
+    # symbol my_inode_setxattr() needed; both leave with the hook. Its one call site is
+    # inside ksu_selinux_hide_enable(), which susfs_sukisu_selinux_hide.py replaces
+    # wholesale straight after this -- dropped here too so the two stay independent.
+    if grep -q 'selinux_hide_init_setxattr' "$target"; then
+      perl -0pi -e 's/^[ \t]*ret = selinux_hide_init_setxattr\(\);\n[ \t]*if \(ret\) \{\n(?:[^}\n]*\n)*?[ \t]*\}\n//m' "$target" || true
+      perl -0pi -e 's/^static int selinux_hide_init_setxattr\(\)\n\{.*?^\}\n\n?//ms' "$target" || true
+      sed -i '/^static int (\*inode_doinit_with_dentry_fn)(struct inode \*inode, struct dentry \*dentry);$/d' "$target" || true
+    fi
+
+    if grep -q 'ksu_lsm_hook\|ksu_lsm_unhook\|KSU_LSM_HOOK_INIT\|setprocattr_fn\|selinux_setprocattr_hook\|_hook\.original' "$target"; then
       echo "::error::LSM hook remnants remain in $target"
-      grep -n 'ksu_lsm_hook\|ksu_lsm_unhook\|KSU_LSM_HOOK_INIT\|setprocattr_fn\|selinux_setprocattr_hook' "$target"
+      grep -n 'ksu_lsm_hook\|ksu_lsm_unhook\|KSU_LSM_HOOK_INIT\|setprocattr_fn\|selinux_setprocattr_hook\|_hook\.original' "$target"
       exit 1
     fi
     grep -q '^int __nocfi my_setprocattr(' "$target" || {

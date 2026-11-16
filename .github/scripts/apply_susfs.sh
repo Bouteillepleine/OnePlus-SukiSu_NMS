@@ -46,19 +46,7 @@ bash "$FIXER"
 
 # Driver side, and it has to land before the tree side's verify: that restores
 # __nocfi on my_setprocattr(), whose signature this rewrites.
-#
-# Only meaningful where susfs actually reduces selinux_hide.c. Below 6.12 the
-# fixer filters that section out of the enable patch -- susfs ships no
-# kernel-side SELinux-hide replacement there, so SukiSU's implementation is kept
-# whole -- and this script would carry out the reduction nothing asked for,
-# deleting the cloak the filter just preserved.
-kv_maj="${KERNEL_VER%%.*}"; kv_min="${KERNEL_VER#*.}"
-if [ "$kv_maj" -gt 6 ] 2>/dev/null ||
-   { [ "$kv_maj" -eq 6 ] 2>/dev/null && [ "$kv_min" -ge 12 ] 2>/dev/null; }; then
-  python3 -I "$HIDE" "$KSU_FOLDER/kernel/feature/selinux_hide.c"
-else
-  echo "   keeping SukiSU selinux_hide ($KERNEL_VER): susfs has no kernel-side replacement, skipping the enable-hunk finisher"
-fi
+python3 -I "$HIDE" "$KSU_FOLDER/kernel/feature/selinux_hide.c"
 
 bash "$TREE_SIDE" verify
 echo "   model: $OP_MODEL ($OP_OS_VERSION)"

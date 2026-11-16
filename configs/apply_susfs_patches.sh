@@ -389,36 +389,9 @@ echo "✅ Added local static bool ksu_no_custom_rc = false to $target"
   fi
 }
 
-# susfs only replaces SukiSU's SELinux-hide implementation on kernels where it
-# ships a kernel-side one of its own: susfs_selinux_lsm_setattr exists ONLY in
-# 50_add_susfs_in_gki-android16-6.12 (measured 2026-11-16: 6.12 -> 2 hits,
-# 6.6 / 6.1 / 5.15 -> 0). Below that the enable patch's selinux_hide.c section is
-# pure demolition -- 1235 lines removed, 25 added, not one of them mentioning
-# susfs -- so applying it deletes the sepolicy cloak outright and puts nothing
-# back. It also rejects once the _hook timing probe is in the file, which strands
-# the callers of helpers the later hunks DO delete (vmlinux: undefined
-# security_context_to_sid_with_policy, matrix run 43803154714). So below 6.12 the
-# section is filtered out and SukiSU's file is kept whole. BakaSU already ships
-# exactly that state, green on all five kernel versions.
-susfs_owns_selinux_hide() {
-  local maj="${KERNEL_VER_LOCAL%%.*}" min="${KERNEL_VER_LOCAL#*.}"
-  [ -n "${KERNEL_VER_LOCAL:-}" ] || return 1
-  [ "$maj" -gt 6 ] 2>/dev/null && return 0
-  [ "$maj" -eq 6 ] 2>/dev/null && [ "$min" -ge 12 ] 2>/dev/null
-}
-
 fix_sukisu_selinux_hide_c() {
   local target="$1"
   [ -f "$target" ] || return 0
-
-  # Nothing to adapt when the file was kept whole: this function points
-  # my_setprocattr at susfs's kernel-side hook (-ENOSYS to fall through to it),
-  # and on a branch that has no such hook that would stop the function chaining
-  # to the original -- the cloak would compile and silently stop working.
-  if ! susfs_owns_selinux_hide; then
-    echo "Keeping SukiSU selinux_hide as-is in: $target (susfs ships no kernel-side hook on ${KERNEL_VER_LOCAL:-?})"
-    return 0
-  fi
 
   echo "Fixing SukiSU selinux_hide compatibility in: $target"
 
@@ -1567,20 +1540,7 @@ cd "$KSU_FOLDER"
 
 normalize_sukisu_to_official_baseline "$KSU_FOLDER/kernel"
 
-ENABLE_PATCH="$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
-if ! susfs_owns_selinux_hide; then
-  ENABLE_PATCH_FILTERED="$(mktemp)"
-  awk '
-    /^diff --git a\/kernel\/feature\/selinux_hide\.c / { skip = 1; next }
-    /^diff --git / { skip = 0 }
-    !skip
-  ' "$ENABLE_PATCH" >"$ENABLE_PATCH_FILTERED"
-  dropped=$(( $(grep -c '^@@' "$ENABLE_PATCH") - $(grep -c '^@@' "$ENABLE_PATCH_FILTERED") ))
-  [ "$dropped" -gt 0 ] || { echo "::error::selinux_hide.c section not found in $ENABLE_PATCH; refusing to build a kernel whose sepolicy cloak may have been demolished unnoticed"; exit 1; }
-  echo "Keeping SukiSU's selinux_hide.c: dropped $dropped enable-patch hunk(s) (susfs ships no kernel-side replacement on ${KERNEL_VER_LOCAL:-?})"
-  ENABLE_PATCH="$ENABLE_PATCH_FILTERED"
-fi
-patch -p1 --forward < "$ENABLE_PATCH" || true
+patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
 
 EXPECTED_SUKISU_REJECTS=(
   "kernel/core/init.c.rej"

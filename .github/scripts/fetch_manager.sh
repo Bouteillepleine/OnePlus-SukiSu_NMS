@@ -107,65 +107,152 @@ from_nightly_link() {
   source_md="the upstream CI build of \`$KSU_REF\`, [proxied by nightly.link](https://nightly.link/$UPSTREAM/workflows/build-manager/$KSU_REF/Manager.zip)"
 }
 
-# Release assets: the $KSU_REF family first, then the rolling manager-ci
-# prerelease when it carries the exact driver, then the newest release.
+# Upstream's own Gitea. kernel/Kbuild already reads LOCAL_COUNT from this host, so
+# it is where the driver version itself comes from; GitHub is a mirror of it.
+GITEA_HOST="${GITEA_HOST:-https://git.zako.shirkneko.top:20004}"
+GITEA_SLUG="${GITEA_SLUG:-shirkneko/SukiSU}"
+GITEA_REPO="$GITEA_HOST/$GITEA_SLUG"
+GITEA_API="$GITEA_HOST/api/v1/repos/$GITEA_SLUG"
+
+REF_SIGNER=""
+signer_once() {
+  [ -n "$REF_SIGNER" ] && { printf '%s' "$REF_SIGNER"; return 0; }
+  REF_SIGNER="$(reference_signer || true)"
+  [ -n "$REF_SIGNER" ] || return 1
+  printf '%s' "$REF_SIGNER"
+}
+
+# Highest build in $1 that is at or below the driver. Never above it: a manager
+# ahead of its driver is the same uapi mismatch from the other side.
+best_at_or_below() {
+  build_of "$1" | awk -v want="$DRIVER_VER" \
+    '$0+0 <= want+0 && $0+0 > best+0 { best=$0 } END { if (best) print best }'
+}
+
+# Just the names in $1 whose build is exactly $2.
+names_at() {
+  local n
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    [ "$(build_of "$n")" = "$2" ] && printf '%s\n' "$n"
+  done <<< "$1"
+}
+
+# Asset names of tag $2 on host $1.
+host_names() {
+  case "$1" in
+    gitea)  curl -fsSL -m 60 --retry 2 --retry-delay 3 "$GITEA_API/releases/tags/$2" 2>/dev/null \
+              | jq -r '.assets[]?.name' 2>/dev/null || true ;;
+    github) gh release view "$2" -R "$UPSTREAM" --json assets -q '.assets[].name' 2>/dev/null || true ;;
+  esac
+}
+
+# Download asset $3 of tag $2 from host $1 into $dl.
+host_fetch() {
+  case "$1" in
+    gitea)  curl -fsSL -m 300 --retry 3 --retry-delay 5 --retry-connrefused \
+              -o "$dl/$3" "$GITEA_REPO/releases/download/$2/$3" ;;
+    github) gh release download "$2" -R "$UPSTREAM" --pattern "$3" --dir "$dl" ;;
+  esac
+}
+
+# Every APK that leaves this script must carry the certificate the kernel checks
+# in manager/apk_sign.c. That gate, not the host it came from, is what makes a
+# non-GitHub source safe to take: an APK without it could not act as the manager.
+verify_signed() {
+  local signer
+  signer="$(signer_once || true)"
+  if [ -z "$signer" ]; then
+    echo "  cannot read the official signing certificate"
+    return 1
+  fi
+  if ! python3 -I "$SIGNER" "$1" "$signer" >/dev/null; then
+    echo "  x $(basename "$1") is not signed by the official manager certificate"
+    return 1
+  fi
+  echo "  ok $(basename "$1")"
+}
+
+# Release assets. A $KSU_REF release family is served by its own assets. Failing
+# that, candidates are ranked by how close their build sits to the driver and
+# never by which host they live on. GitHub's manager-ci stopped being refreshed
+# on 2026-11-15 when upstream moved CI mirroring to cnb.cool: it held 30000 while
+# the stable release held 35000 and upstream's Gitea held the exact 35034, so
+# ranking by source shipped the worst of the three.
 from_release() {
-  local tags family t names n s tag fallback_tag fallback_normal ci_names
+  local tags family t names n s tag fallback_tag fallback_normal b host cand
+
   tags="$(gh release list -R "$UPSTREAM" -L 50 --json tagName,isPrerelease,isDraft \
     -q '.[] | select((.isPrerelease or .isDraft) | not) | .tagName')"
   [ -n "$tags" ] || { echo "  $UPSTREAM has no release"; return 1; }
 
   family="$(grep -E "^$(printf '%s' "$KSU_REF" | sed 's/[.]/\\./g')(-r[0-9]+)?$" <<< "$tags" || true)"
-  if [ -z "$family" ]; then
-    ci_names="$(gh release view manager-ci -R "$UPSTREAM" --json assets -q '.assets[].name' 2>/dev/null || true)"
-    # Newest manager-ci build at or below the driver, not an exact hit only.
-    # Upstream builds the manager off its own commits, so it sits a build or two
-    # behind a freshly resolved kernel ref more often than it lands on it, and
-    # exact-or-nothing then fell through to the newest stable release: driver
-    # 41134 shipped with manager 41100, a 34-build gap, while manager-ci held
-    # 41133. Never above the driver -- a manager ahead of its driver is the same
-    # uapi mismatch from the other side.
-    ci_best="$(build_of "$ci_names" | awk -v want="$DRIVER_VER" \
-      '$0+0 <= want+0 && $0+0 > best+0 { best=$0 } END { if (best) print best }')"
-    if [ -n "$ci_best" ]; then
-      family="manager-ci"
-      if [ "$ci_best" = "$DRIVER_VER" ]; then
-        reasons+=("the kernels were built from \`$KSU_REF\`, which has no release of its own, so this is the rolling \`manager-ci\` build that matches driver $DRIVER_VER")
-      else
-        reasons+=("the kernels were built from \`$KSU_REF\`, which has no release of its own, so this is \`manager-ci\` build $ci_best -- the newest upstream manager at or below driver $DRIVER_VER")
+  if [ -n "$family" ]; then
+    tag="" fallback_tag="" fallback_normal=""
+    for t in $family; do
+      names="$(host_names github "$t" | grep -E -- "${apk_re}(-spoofed)?\.apk\$" || true)"
+      n="$(pick "$names" "")"
+      s="$(pick "$names" "-spoofed")"
+      if [ -n "$n" ] && [ -n "$s" ]; then tag="$t"; break; fi
+      if [ -n "$n" ] && [ -z "$fallback_tag" ]; then
+        fallback_tag="$t" fallback_normal="$n"
       fi
+    done
+    if [ -z "$tag" ] && [ -n "$fallback_tag" ]; then
+      tag="$fallback_tag" n="$fallback_normal" s=""
+      echo "::warning::no release in the $KSU_REF family ships a spoofed manager; attaching the plain one from $tag only"
     fi
-  fi
-  if [ -z "$family" ]; then
-    family="$(head -n1 <<< "$tags")"
-    reasons+=("the kernels were built from \`$KSU_REF\`, which has no release of its own, so this is the newest upstream release")
-  fi
+    [ -n "$tag" ] || { echo "  no release pairs a manager APK with $KSU_REF"; return 1; }
+    host=github
+  else
+    # One line per candidate: "<build>\t<host>\t<tag>", best build first.
+    cand="$( { for host in gitea github; do
+                 b="$(best_at_or_below "$(host_names "$host" manager-ci)")"
+                 [ -z "$b" ] || printf '%s\t%s\tmanager-ci\n' "$b" "$host"
+               done
+               t="$(head -n1 <<< "$tags")"
+               b="$(best_at_or_below "$(host_names github "$t")")"
+               [ -z "$b" ] || printf '%s\tgithub\t%s\n' "$b" "$t"
+             } | sort -t"$(printf '\t')" -k1,1nr )"
+    [ -n "$cand" ] || { echo "  no manager at or below driver $DRIVER_VER"; return 1; }
 
-  tag="" fallback_tag="" fallback_normal=""
-  for t in $family; do
-    names="$(gh release view "$t" -R "$UPSTREAM" --json assets -q '.assets[].name' \
-      | grep -E -- "${apk_re}(-spoofed)?\.apk\$" || true)"
-    n="$(pick "$names" "")"
-    s="$(pick "$names" "-spoofed")"
-    if [ -n "$n" ] && [ -n "$s" ]; then
+    tag="" n="" s=""
+    while IFS="$(printf '\t')" read -r b host t; do
+      [ -n "${b:-}" ] || continue
+      echo "  candidate: $t on $host, build $b"
+      names="$(names_at "$(host_names "$host" "$t")" "$b" \
+               | grep -E -- "${apk_re}(-spoofed)?\.apk\$" || true)"
+      n="$(pick "$names" "")"
+      [ -n "$n" ] || { echo "    no arm64 plain APK"; continue; }
+      s="$(pick "$names" "-spoofed")"
       tag="$t"
+      if [ "$b" = "$DRIVER_VER" ]; then
+        reasons+=("\`$KSU_REF\` has no release of its own, so this is the \`$t\` build that matches driver $DRIVER_VER")
+      else
+        reasons+=("\`$KSU_REF\` has no release of its own, so this is \`$t\` build $b -- the newest upstream manager at or below driver $DRIVER_VER")
+      fi
       break
-    fi
-    if [ -n "$n" ] && [ -z "$fallback_tag" ]; then
-      fallback_tag="$t" fallback_normal="$n"
-    fi
-  done
-  if [ -z "$tag" ] && [ -n "$fallback_tag" ]; then
-    tag="$fallback_tag" n="$fallback_normal" s=""
-    echo "::warning::no release in the $KSU_REF family ships a spoofed manager; attaching the plain one from $tag only"
+    done <<< "$cand"
+    [ -n "$tag" ] || { echo "  no candidate carried an arm64 manager"; return 1; }
+    [ -n "$s" ] || echo "::warning::no release in the $KSU_REF family ships a spoofed manager; attaching the plain one from $tag only"
   fi
-  [ -n "$tag" ] || { echo "  no release pairs a manager APK with $KSU_REF"; return 1; }
 
-  gh release download "$tag" -R "$UPSTREAM" --pattern "$n" ${s:+--pattern "$s"} --dir "$dl" || return 1
-  build="$(build_of "$n")"
+  host_fetch "$host" "$tag" "$n" || return 1
+  verify_signed "$dl/$n" || return 1
   normal_path="$dl/$n"
-  [ -z "$s" ] || spoofed_path="$dl/$s"
-  source_md="the upstream release [$tag](https://github.com/$UPSTREAM/releases/tag/$tag)"
+  if [ -n "$s" ]; then
+    if host_fetch "$host" "$tag" "$s" && verify_signed "$dl/$s"; then
+      spoofed_path="$dl/$s"
+    else
+      s=""
+    fi
+  fi
+  build="$(build_of "$n")"
+  if [ "$host" = gitea ]; then
+    source_md="the upstream prerelease [$tag]($GITEA_REPO/releases/tag/$tag) on upstream's own Gitea -- GitHub's mirror of it is stale"
+  else
+    source_md="the upstream release [$tag](https://github.com/$UPSTREAM/releases/tag/$tag)"
+  fi
 }
 
 # A tag build is served by its own release assets, so only reach for the CI

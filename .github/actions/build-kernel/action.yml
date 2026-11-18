@@ -1121,10 +1121,7 @@ runs:
           sed -i 's#^KSU_VERSION_FULL :=.*#KSU_VERSION_FULL := v$(VERSION_TAG)-⚡Nova⚡@SukiSU#' "$KERNEL_PLATFORM_FOLDER/KernelSU/kernel/Kbuild" || true
         fi
 
-        {
-          echo "KSU_COMMIT_SHA=$KSU_COMMIT_SHA"
-          echo "KSUVER=$KSU_VERSION"
-        } >> "$GITHUB_ENV"
+        echo "KSU_COMMIT_SHA=$KSU_COMMIT_SHA" >> "$GITHUB_ENV"
 
         cd ..
 

@@ -42,7 +42,7 @@ on:
         type: string
         default: ''
       ksu_options:
-        description: 'Enter SukiSU build json. hash = any branch, tag or sha in SukiSU-Nova/SukiSU-Nova. Default main tracks the newest SukiSU; the Nova rename deleted every v4.x tag, so pin a sha rather than a tag to get a known-good build back -- configs/apply_susfs_patches.sh was validated against the v4.2.1 and v4.3.0 trees and a main build can reject on upstream churn.'
+        description: 'Enter SukiSU build json. hash = any branch, tag or sha in shirkneko/SukiSU on the upstream Gitea (GitHub mirrors it, days behind). Default main tracks the newest SukiSU; the Nova rename deleted every v4.x tag, so pin a sha rather than a tag to get a known-good build back -- configs/apply_susfs_patches.sh was validated against the v4.2.1 and v4.3.0 trees and a main build can reject on upstream churn.'
         required: true
         type: string
         default: '[{"type":"SUKISU","hash":"main"}]'
@@ -275,52 +275,55 @@ jobs:
           ksu_type=$(echo "$ksu_options_normalized" | jq -r '.[0].type')
           ksu_ref=$(echo "$ksu_options_normalized" | jq -r '.[0].hash')
           
-          KSU_REPO_OWNER="SukiSU-Nova"
-          KSU_REPO_NAME="SukiSU-Nova"
-          
-          HEAD_REF="refs/heads/${ksu_ref}"
-          TAG_REF="refs/tags/${ksu_ref}"
-          
-          QUERY='query($owner: String!, $name: String!, $headRef: String!, $tagRef: String!, $objRef: String!) {
-            repository(owner: $owner, name: $name) {
-              hb: ref(qualifiedName: $headRef) { t: target { ... on Commit { o: oid } } }
-              ht: ref(qualifiedName: $tagRef) { t: target { ... on Commit { o: oid } } }
-              ho: object(expression: $objRef) { ... on Commit { o: oid } }
-            }
-          }'
-          
-          MAX_RETRIES=3
-          RETRY_COUNT=0
-          RETRY_DELAY=5 # Seconds to wait between retries
-          
-          echo "Resolving $ksu_type hash ($ksu_ref)..."
-          
-          until [ $RETRY_COUNT -ge $MAX_RETRIES ]; do
-            EXIT_CODE=0
-            RESULT=$(gh api graphql -f query="$QUERY" -f owner="$KSU_REPO_OWNER" -f name="$KSU_REPO_NAME" -f headRef="$HEAD_REF" -f tagRef="$TAG_REF" -f objRef="$ksu_ref" 2>/dev/null) || EXIT_CODE=$?
-            
-            if [ $EXIT_CODE -eq 0 ] && [ ! -z "$RESULT" ]; then
-              echo "  ✅ API Success"
-              break
-            fi
-            
-            RETRY_COUNT=$((RETRY_COUNT + 1))
-            echo "::warning::API failed (Attempt $RETRY_COUNT/$MAX_RETRIES). Retrying in ${RETRY_DELAY}s..."
-            sleep $RETRY_DELAY
-          done
-          
-          if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-            echo "::error::GitHub API unreachable. Cannot validate $ksu_ref"
+          # Resolve on the host we clone FROM. kernel/setup.sh clones
+          # git.zako.shirkneko.top unconditionally (byte-identical copy on both
+          # hosts, sha256 3b957d85), while this step used to resolve on GitHub --
+          # whose mirror ran 34 commits behind on 2026-11-19. So the checkout was
+          # an old oid out of a current tree, and because kernel/Kbuild reads
+          # LOCAL_COUNT from zako's API the driver version described zako's head
+          # while the code was the older commit: nm1.36.0-r2 shipped 35038 built
+          # from count 4008 (= 35004). No GitHub fallback on purpose -- the clone
+          # already hard-depends on this host, so falling back to the mirror only
+          # reinstates the skew while looking like resilience.
+          KSU_REPO_URL="https://git.zako.shirkneko.top:20004/shirkneko/SukiSU"
+
+          echo "Resolving $ksu_type hash ($ksu_ref) on $KSU_REPO_URL..."
+
+          resolved_sha=""
+          if printf '%s' "$ksu_ref" | grep -qE '^[0-9a-fA-F]{40}$'; then
+            # ls-remote cannot resolve a bare sha. Take it as given; the checkout
+            # in setup.sh is what fails if it is not in this history.
+            resolved_sha="$(printf '%s' "$ksu_ref" | tr 'A-F' 'a-f')"
+            echo "  pinned commit, taken as given"
+          else
+            MAX_RETRIES=3
+            RETRY_COUNT=0
+            RETRY_DELAY=5 # Seconds to wait between retries
+            until [ $RETRY_COUNT -ge $MAX_RETRIES ]; do
+              # An absent ref is rc=0 with empty output, so test the output.
+              LS="$(git ls-remote "$KSU_REPO_URL" \
+                      "refs/heads/$ksu_ref" "refs/tags/$ksu_ref" 2>/dev/null || true)"
+              if [ -n "$LS" ]; then
+                # Branch before tag, as the old refs/heads-then-refs/tags query
+                # did; a peeled annotated tag (^{}) beats the tag object.
+                resolved_sha="$(awk -v r="$ksu_ref" '
+                  $2 == "refs/heads/" r        { h = $1 }
+                  $2 == "refs/tags/" r "^{}"   { d = $1 }
+                  $2 == "refs/tags/" r         { t = $1 }
+                  END { print (h != "" ? h : (d != "" ? d : t)) }' <<< "$LS")"
+                [ -n "$resolved_sha" ] && break
+              fi
+              RETRY_COUNT=$((RETRY_COUNT + 1))
+              echo "::warning::zako ref resolve failed (Attempt $RETRY_COUNT/$MAX_RETRIES). Retrying in ${RETRY_DELAY}s..."
+              sleep $RETRY_DELAY
+            done
+          fi
+
+          if [ -z "$resolved_sha" ]; then
+            echo "::error::Ref/Hash '$ksu_ref' did not resolve at $KSU_REPO_URL"
             exit 1
           fi
-          
-          resolved_sha=$(echo "$RESULT" | jq -r '.data.repository | (.hb.t.o // .ht.t.o // .ho.o // "unknown")')
-          
-          if [ "$resolved_sha" == "unknown" ]; then
-            echo "::error::Ref/Hash '$ksu_ref' does not exist in $KSU_REPO_OWNER/$KSU_REPO_NAME"
-            exit 1
-          fi
-          
+
           echo "  ✅ Resolved: $ksu_type/$ksu_ref → $resolved_sha"
           echo "ksu_resolved_hash=$resolved_sha" >> "$GITHUB_OUTPUT"
           

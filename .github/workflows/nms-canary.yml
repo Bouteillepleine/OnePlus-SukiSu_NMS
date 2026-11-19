@@ -64,7 +64,6 @@ jobs:
             printf '%s %s %s (%s)\n' "$repo" "$ref" "$sha" "$note" >> heads.txt
           done <<'SOURCES'
           KernelSU-Next/KernelSU-Next#dev#KSUN root impl
-          SukiSU-Nova/SukiSU-Nova#main#SukiSU root impl
           Baka-SU/BakaSU#main#BakaSU root impl
           WildKernels/kernel_patches#main#hooks + susfs, UNPINNED
           Bouteillepleine/kernel_patches#main#our _ghost/_pathhide/_hook
@@ -79,6 +78,21 @@ jobs:
           done <<'GITLAB'
           simonpunk/susfs4ksu#gki-android16-6.12#susfs kernel patch, UNPINNED
           GITLAB
+          # SukiSU develops on its own Forgejo and GitHub only mirrors it, days
+          # behind: SukiSU-Nova/SukiSU-Nova@main still read 1439545f on 2026-11-19
+          # while this host was 35 commits ahead. Watching the mirror meant drift
+          # was reported days after it happened, which is the window this workflow
+          # exists to close. The builder resolves its ref on this same host.
+          while IFS='#' read -r slug ref note; do
+            [ -n "$slug" ] || continue
+            sha=$(curl -fsS --max-time 60 \
+                    "https://git.zako.shirkneko.top:20004/api/v1/repos/$slug/commits?sha=$ref&limit=1" \
+                    2>/dev/null | jq -r '.[0].sha // empty' || true)
+            [ -n "$sha" ] || sha=UNREACHABLE
+            printf '%s %s %s (%s)\n' "$slug" "$ref" "$sha" "$note" >> heads.txt
+          done <<'FORGEJO'
+          shirkneko/SukiSU#main#SukiSU root impl, upstream Forgejo
+          FORGEJO
           echo '--- tracked upstream HEADs ---'
           cat heads.txt
           if grep -q UNREACHABLE heads.txt; then

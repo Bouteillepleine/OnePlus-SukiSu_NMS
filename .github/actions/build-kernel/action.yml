@@ -1155,6 +1155,18 @@ runs:
           sed -i 's#^KSU_VERSION_FULL :=.*#KSU_VERSION_FULL := v$(VERSION_TAG)-⚡Nova⚡@SukiSU#' "$KERNEL_PLATFORM_FOLDER/KernelSU/kernel/Kbuild" || true
         fi
 
+        # Kbuild counts zako's $(REPO_BRANCH) at compile time, so a push mid-run split
+        # nm1.36.0-r3 across 35049/35050 for one commit. Count up to the commit built.
+        KB="$KERNEL_PLATFORM_FOLDER/KernelSU/kernel/Kbuild"
+        if [ -f "$KB" ] && grep -q 'RELEASE_COMMITS' "$KB"; then
+          [[ "$KSU_COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::cannot pin the SukiSU build count: no commit sha"; exit 1; }
+          hits=$(grep -cF 'commits?sha=$(REPO_BRANCH)&limit=1' "$KB" || true)
+          [ "$hits" = 1 ] || { echo "::error::Kbuild has $hits 'commits?sha=\$(REPO_BRANCH)' queries, expected 1: upstream changed how it counts"; exit 1; }
+          sed -i "s#commits?sha=\$(REPO_BRANCH)&limit=1#commits?sha=${KSU_COMMIT_SHA}\&limit=1#" "$KB"
+          grep -qF "commits?sha=${KSU_COMMIT_SHA}&limit=1" "$KB" || { echo "::error::failed to pin the SukiSU build count"; exit 1; }
+          echo "SukiSU build count pinned to $KSU_COMMIT_SHA"
+        fi
+
         echo "KSU_COMMIT_SHA=$KSU_COMMIT_SHA" >> "$GITHUB_ENV"
 
         cd ..

@@ -4,6 +4,8 @@
 
 ### A custom OnePlus kernel + a **mountless** hiding add-on
 
+**English** | [简体中文](README_zh.md)
+
 *Automated AnyKernel3 builds for dozens of OnePlus models with `SukiSU` root and **NoMount** hookless VFS redirection baked in.*
 
 [![Latest Release](https://img.shields.io/github/v/release/Bouteillepleine/OnePlus-SukiSu_NMS?style=for-the-badge&logo=github&label=Latest%20Release&color=6C4AB6)](https://github.com/Bouteillepleine/OnePlus-SukiSu_NMS/releases/latest)

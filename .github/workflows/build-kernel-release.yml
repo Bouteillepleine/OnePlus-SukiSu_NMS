@@ -838,12 +838,13 @@ jobs:
           # failed command substitution exited before anything was written, and
           # --paginate means any single page can do it. This job only writes a
           # summary and gates nothing, so retry, then degrade to a note rather than
-          # reporting a build failure that did not happen.
+          # reporting a build failure that did not happen. 100 per page 502s on every
+          # attempt once a run holds ~100 jobs; 30 per page answers.
           jobs=""
           got=""
           for attempt in 1 2 3 4 5; do
             if jobs="$(gh api --paginate \
-                "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
+                "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=30" \
                 --jq '.jobs[] | select(.name|startswith("build (")) | "\(.conclusion)\t\(.name)"')"; then
               got=1
               break

@@ -1089,14 +1089,24 @@ runs:
 
         if [ -z "$KSU_INPUT" ]; then
           echo "No branch/hash provided — using default installer mode."
-          bash "$SUKISU_SETUP_SCRIPT"
         else
           echo "Using SukiSU branch/hash: $KSU_INPUT"
-          bash "$SUKISU_SETUP_SCRIPT" "$KSU_INPUT"
         fi
+        # setup.sh clones from SukiSU's own Gitea, which resets connections when many jobs clone at
+        # once; the clone dies before setup.sh links or edits anything, so a clean rerun is safe.
+        export GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=60
+        for attempt in 1 2 3; do
+          rm -rf "$KERNEL_PLATFORM_FOLDER/KernelSU"
+          bash "$SUKISU_SETUP_SCRIPT" ${KSU_INPUT:+"$KSU_INPUT"} || true
+          [ -d "$KERNEL_PLATFORM_FOLDER/KernelSU/kernel" ] && break
+          if [ "$attempt" -lt 3 ]; then
+            echo "::warning::SukiSU setup attempt $attempt did not produce KernelSU; retrying in $((attempt * 30))s"
+            sleep $((attempt * 30))
+          fi
+        done
 
-        if [ ! -d "$KERNEL_PLATFORM_FOLDER/KernelSU" ]; then
-          echo "::error::KernelSU directory was not created by SukiSU setup."
+        if [ ! -d "$KERNEL_PLATFORM_FOLDER/KernelSU/kernel" ]; then
+          echo "::error::KernelSU was not set up after 3 attempts (SukiSU setup.sh / clone failed)."
           find "$KERNEL_PLATFORM_FOLDER" -maxdepth 3 -type d \( -iname "*ksu*" -o -iname "*suki*" \) || true
           exit 1
         fi
